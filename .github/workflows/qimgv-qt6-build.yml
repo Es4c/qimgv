@@ -41,7 +41,7 @@ jobs:
             mingw-w64-clang-x86_64-libheif
             python3
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -220,7 +220,7 @@ jobs:
 
     steps:
       # 关键修复：先 checkout 仓库，让 gh 命令能访问 git 信息
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
