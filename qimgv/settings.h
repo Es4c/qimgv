@@ -288,6 +288,9 @@ private:
     mutable QStringList mCachedSupportedMimeTypes;
     mutable bool mFormatsCacheValid;
     mutable bool mMimeTypesCacheValid;
+    // QImageReader 原始格式磁盘缓存（跨启动持久化）
+    mutable QList<QByteArray> mCachedImageReaderFormats;
+    mutable bool mImageReaderFormatsCacheValid;
     
     // 缓存格式过滤器和正则表达式，避免重复构建
     mutable QString mCachedFormatsFilter;
@@ -351,6 +354,8 @@ private:
 
     void setupCache();
     void fillVideoFormats();
+    void loadImageReaderFormatsFromDisk() const;
+    void saveImageReaderFormatsToDisk() const;
 
 signals:
     void settingsChanged();

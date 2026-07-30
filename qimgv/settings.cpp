@@ -1,5 +1,7 @@
 #include "settings.h"
 #include <QHash>
+#include <QFile>
+#include <QTextStream>
 
 Settings *settings = nullptr;
 
@@ -22,6 +24,7 @@ Settings::Settings(QObject *parent) : QObject(parent) {
     mMimeTypesCacheValid = false;
     mFormatsFilterCacheValid = false;
     mFormatsRegexCacheValid = false;
+    mImageReaderFormatsCacheValid = false;
     
     // 初始化缓存标志
     mStylesheetCacheValid = false;
@@ -305,9 +308,47 @@ void Settings::setMpvBinary(const QString &path) {
     }
 }
 //------------------------------------------------------------------------------
+void Settings::loadImageReaderFormatsFromDisk() const {
+    if (mImageReaderFormatsCacheValid)
+        return;
+    QFile file(mTmpDir->absolutePath() + "/supported_formats.cache");
+    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QTextStream in(&file);
+        QString cachedQtVersion = in.readLine();
+        if (cachedQtVersion == QString(qVersion())) {
+            mCachedImageReaderFormats.clear();
+            while (!in.atEnd()) {
+                QByteArray line = in.readLine().trimmed().toLatin1();
+                if (!line.isEmpty())
+                    mCachedImageReaderFormats << line;
+            }
+            mImageReaderFormatsCacheValid = true;
+        }
+    }
+}
+
+void Settings::saveImageReaderFormatsToDisk() const {
+    QFile file(mTmpDir->absolutePath() + "/supported_formats.cache");
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        QTextStream out(&file);
+        out << QString(qVersion()) << "\n";
+        for (const auto &fmt : mCachedImageReaderFormats)
+            out << QString::fromLatin1(fmt) << "\n";
+    }
+}
+
 QList<QByteArray> Settings::supportedFormats() {
     if (!mFormatsCacheValid) {
-        mCachedSupportedFormats = QImageReader::supportedImageFormats();
+        // 优先使用磁盘缓存，避免重复扫描 QImageReader 支持的格式
+        if (!mImageReaderFormatsCacheValid) {
+            loadImageReaderFormatsFromDisk();
+            if (!mImageReaderFormatsCacheValid) {
+                mCachedImageReaderFormats = QImageReader::supportedImageFormats();
+                mImageReaderFormatsCacheValid = true;
+                saveImageReaderFormatsToDisk();
+            }
+        }
+        mCachedSupportedFormats = mCachedImageReaderFormats;
         mCachedSupportedFormats << "jfif";
         if(videoPlayback())
             mCachedSupportedFormats << mVideoFormatsMap.values();
