@@ -34,7 +34,7 @@ Settings::Settings(QObject *parent) : QObject(parent) {
     mWindowGeometryCacheValid = false;
     mImageFitModeCacheValid = false;
     mPanelPreviewsSizeCacheValid = false;
-    mJPEGSaveQualityCacheValid = false;
+    mImageSaveQualityCacheValid = false;
     mSavedPathsCacheValid = false;
     mBookmarksCacheValid = false;
     mShortcutsCacheValid = false;
@@ -896,20 +896,20 @@ void Settings::setExpandLimit(int value) {
     settingsConf->setValue("expandLimit", value);
 }
 //------------------------------------------------------------------------------
-int Settings::JPEGSaveQuality() {
-    if (mJPEGSaveQualityCacheValid) {
-        return mCachedJPEGSaveQuality;
+int Settings::ImageSaveQuality() {
+    if (mImageSaveQualityCacheValid) {
+        return mCachedImageSaveQuality;
     }
-    
-    int quality = std::clamp(settingsConf->value("JPEGSaveQuality", 95).toInt(), 0, 100);
-    mCachedJPEGSaveQuality = quality;
-    mJPEGSaveQualityCacheValid = true;
+
+    int quality = std::clamp(settingsConf->value("ImageSaveQuality", 96).toInt(), 0, 100);
+    mCachedImageSaveQuality = quality;
+    mImageSaveQualityCacheValid = true;
     return quality;
 }
 
-void Settings::setJPEGSaveQuality(int value) {
-    settingsConf->setValue("JPEGSaveQuality", value);
-    mJPEGSaveQualityCacheValid = false;
+void Settings::setImageSaveQuality(int value) {
+    settingsConf->setValue("ImageSaveQuality", value);
+    mImageSaveQualityCacheValid = false;
 }
 //------------------------------------------------------------------------------
 ScalingFilter Settings::scalingFilter() {

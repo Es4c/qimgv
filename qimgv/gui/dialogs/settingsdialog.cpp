@@ -232,8 +232,8 @@ void SettingsDialog::readSettings() {
     ui->autoResizeLimitSlider->setValue(static_cast<int>(settings->autoResizeLimit()) / 5);
     onAutoResizeLimitSliderChanged(ui->autoResizeLimitSlider->value());
 
-    ui->JPEGQualitySlider->setValue(settings->JPEGSaveQuality());
-    onJPEGQualitySliderChanged(ui->JPEGQualitySlider->value());
+    ui->ImageQualitySlider->setValue(settings->ImageSaveQuality());
+    onImageQualitySliderChanged(ui->ImageQualitySlider->value());
 
     ui->expandLimitSlider->setValue(settings->expandLimit());
     onExpandLimitSliderChanged(ui->expandLimitSlider->value());
@@ -345,7 +345,7 @@ void SettingsDialog::saveSettings() {
     settings->setUseFixedZoomLevels(ui->useFixedZoomLevelsCheckBox->isChecked());
     settings->setZoomLevels(ui->zoomLevels->text());
 
-    settings->setJPEGSaveQuality(ui->JPEGQualitySlider->value());
+    settings->setImageSaveQuality(ui->ImageQualitySlider->value());
     settings->setZoomStep(static_cast<float>(qreal(ui->zoomStepSlider->value()) / qreal(100)));
     settings->setMouseScrollingSpeed(static_cast<float>(qreal(0.5) + (qreal(ui->mouseScrollingSpeedSlider->value()) * qreal(0.25))));
     settings->setAutoResizeLimit(ui->autoResizeLimitSlider->value() * 5);
@@ -618,8 +618,8 @@ void SettingsDialog::onExpandLimitSliderChanged(int value) {
         ui->expandLimitLabel->setText(QString::number(value) + "x");
 }
 //------------------------------------------------------------------------------
-void SettingsDialog::onJPEGQualitySliderChanged(int value) {
-    ui->JPEGQualityLabel->setText(QString::number(value) + "%");
+void SettingsDialog::onImageQualitySliderChanged(int value) {
+    ui->ImageQualityLabel->setText(QString::number(value) + "%");
 }
 //------------------------------------------------------------------------------
 void SettingsDialog::onZoomStepSliderChanged(int value) {

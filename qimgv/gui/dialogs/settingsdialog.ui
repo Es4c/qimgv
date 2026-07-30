@@ -3885,14 +3885,14 @@
                      <number>0</number>
                     </property>
                     <item>
-                     <widget class="QLabel" name="label_3">
-                      <property name="text">
-                       <string>JPEG save quality:</string>
-                      </property>
-                     </widget>
-                    </item>
-                    <item>
-                     <widget class="QSlider" name="JPEGQualitySlider">
+                      <widget class="QLabel" name="label_3">
+                       <property name="text">
+                        <string>Image save quality:</string>
+                       </property>
+                      </widget>
+                     </item>
+                     <item>
+                      <widget class="QSlider" name="ImageQualitySlider">
                       <property name="sizePolicy">
                        <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
                         <horstretch>0</horstretch>
@@ -3929,7 +3929,7 @@
                      </widget>
                     </item>
                     <item>
-                     <widget class="QLabel" name="JPEGQualityLabel">
+                      <widget class="QLabel" name="ImageQualityLabel">
                       <property name="text">
                        <string>q</string>
                       </property>
@@ -4472,10 +4472,10 @@ li.checked::marker { content: &quot;\2612&quot;; }
    </hints>
   </connection>
   <connection>
-   <sender>JPEGQualitySlider</sender>
+   <sender>ImageQualitySlider</sender>
    <signal>valueChanged(int)</signal>
    <receiver>SettingsDialog</receiver>
-   <slot>onJPEGQualitySliderChanged(int)</slot>
+   <slot>onImageQualitySliderChanged(int)</slot>
    <hints>
     <hint type="sourcelabel">
      <x>369</x>
@@ -4828,8 +4828,8 @@ li.checked::marker { content: &quot;\2612&quot;; }
   <slot>fullscreenTextColorDialog()</slot>
   <slot>onExpandLimitSliderChanged(int)</slot>
   <slot>onZoomStepSliderChanged(int)</slot>
-  <slot>onJPEGQualitySliderChanged(int)</slot>
-  <slot>saveSettingsAndClose()</slot>
+   <slot>onImageQualitySliderChanged(int)</slot>
+   <slot>saveSettingsAndClose()</slot>
   <slot>saveSettings()</slot>
   <slot>editShortcut()</slot>
   <slot>editShortcut(int)</slot>

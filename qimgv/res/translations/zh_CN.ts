@@ -1548,8 +1548,8 @@
     </message>
     <message>
         <location filename="../../gui/dialogs/settingsdialog.ui" line="4352"/>
-        <source>JPEG save quality:</source>
-        <translation>JPEG 保存质量:</translation>
+        <source>Image save quality:</source>
+        <translation>图片保存质量:</translation>
     </message>
     <message>
         <location filename="../../gui/dialogs/settingsdialog.ui" line="4396"/>

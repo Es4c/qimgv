@@ -173,8 +173,8 @@ public:
 
     float zoomStep();
     void setZoomStep(float value);
-    int JPEGSaveQuality();
-    void setJPEGSaveQuality(int value);
+    int ImageSaveQuality();
+    void setImageSaveQuality(int value);
     void setZoomIndicatorMode(ZoomIndicatorMode mode);
     ZoomIndicatorMode zoomIndicatorMode();
     void setFocusPointIn1to1Mode(ImageFocusPoint mode);
@@ -319,8 +319,8 @@ private:
     // 缓存整数设置值
     mutable int mCachedPanelPreviewsSize;
     mutable bool mPanelPreviewsSizeCacheValid;
-    mutable int mCachedJPEGSaveQuality;
-    mutable bool mJPEGSaveQualityCacheValid;
+    mutable int mCachedImageSaveQuality;
+    mutable bool mImageSaveQualityCacheValid;
     
     // 缓存字符串列表
     mutable QStringList mCachedSavedPaths;

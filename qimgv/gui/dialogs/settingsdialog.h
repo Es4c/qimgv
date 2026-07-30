@@ -81,7 +81,7 @@ private slots:
     void onBgOpacitySliderChanged(int value);
     void onExpandLimitSliderChanged(int value);
     void onZoomStepSliderChanged(int value);
-    void onJPEGQualitySliderChanged(int value);
+    void onImageQualitySliderChanged(int value);
     void resetToDesktopTheme();    
     void onAutoResizeLimitSliderChanged(int value);
     void onMouseScrollingSpeedSliderChanged(int value);

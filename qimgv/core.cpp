@@ -470,7 +470,7 @@ void Core::openFromClipboard() {
         if(QStringView(ext).compare(u"png", Qt::CaseInsensitive) == 0)
             quality = 30;
         else if(QStringView(ext).compare(u"jpg", Qt::CaseInsensitive) == 0 || QStringView(ext).compare(u"jpeg", Qt::CaseInsensitive) == 0)
-            quality = settings->JPEGSaveQuality();
+            quality = settings->ImageSaveQuality();
 
         bool backupExists = false, success = false, originalExists = false;
 
