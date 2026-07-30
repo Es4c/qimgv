@@ -13,7 +13,7 @@ class MenuItem : public QWidget {
     Q_OBJECT
 public:
     MenuItem(QWidget *parent = nullptr);
-    ~MenuItem();
+    ~MenuItem() = default;
 
     // 修复：改为 const & (针对只读引用的警告)
     void setText(const QString &text);

@@ -29,9 +29,6 @@ MenuItem::MenuItem(QWidget *parent)
     setLayout(mLayout);
 }
 
-MenuItem::~MenuItem() {
-}
-
 void MenuItem::setText(const QString &text) {
     mTextLabel.setText(text);
 }
