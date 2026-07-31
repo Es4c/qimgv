@@ -9,11 +9,6 @@ InfoBarProxy::InfoBarProxy(QWidget *parent) : QWidget(parent), infoBar(nullptr) 
     setLayout(layout);
 }
 
-InfoBarProxy::~InfoBarProxy() {
-    if(infoBar)
-        infoBar->deleteLater();
-}
-
 void InfoBarProxy::setInfo(const QString& position, const QString& fileName, const QString& info) {
     if(infoBar) {
         infoBar->setInfo(position, fileName, info);
@@ -28,7 +23,6 @@ void InfoBarProxy::init() {
     infoBar = new InfoBar(this);
     setFocusProxy(infoBar);
     layout->addWidget(infoBar);
-    setLayout(layout);
     if(!stateBuf.fileName.isEmpty())
         infoBar->setInfo(stateBuf.position, stateBuf.fileName, stateBuf.info);
 }

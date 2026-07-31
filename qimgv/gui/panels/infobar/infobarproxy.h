@@ -13,7 +13,6 @@ class InfoBarProxy : public QWidget {
     Q_OBJECT
 public:
     explicit InfoBarProxy(QWidget *parent = nullptr);
-    ~InfoBarProxy();
 
     void init();
 public slots:
