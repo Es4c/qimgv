@@ -31,6 +31,19 @@ void ImageStatic::load() {
     }
 }
 
+// 将 QImageIOHandler 的变换标志转换为 EXIF orientation 数字
+static int transformationToExifOrientation(QImageIOHandler::Transformations t) {
+    if (t == QImageIOHandler::TransformationNone) return 1;
+    if (t == QImageIOHandler::TransformationRotate180) return 3;
+    if (t == QImageIOHandler::TransformationRotate90) return 6;
+    if (t == QImageIOHandler::TransformationRotate270) return 8;
+    if (t == QImageIOHandler::TransformationMirror) return 2;
+    if (t == QImageIOHandler::TransformationFlip) return 4;
+    if (t == (QImageIOHandler::TransformationMirror | QImageIOHandler::TransformationRotate270)) return 5;
+    if (t == (QImageIOHandler::TransformationMirror | QImageIOHandler::TransformationRotate90)) return 7;
+    return 1;
+}
+
 void ImageStatic::loadGeneric() {
     QImageReader reader(mPath);
 
@@ -52,7 +65,8 @@ void ImageStatic::loadGeneric() {
     QImage image = std::move(imageData);
 
     // ✅ 修复：只在合法 EXIF 范围内处理
-    const int orientation = mDocInfo->exifOrientation();
+    // 复用同一个 reader 读取方向，避免再次打开文件
+    const int orientation = transformationToExifOrientation(reader.transformation());
     if (orientation >= 2 && orientation <= 8) {
         image = ImageLib::exifRotated(std::move(image), orientation);
         if (image.isNull()) {

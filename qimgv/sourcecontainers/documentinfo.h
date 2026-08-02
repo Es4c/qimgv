@@ -39,7 +39,6 @@ public:
     DocumentType type() const;
     QMimeType mimeType() const;
     QString format() const;
-    int exifOrientation() const;
     QDateTime lastModified() const;
 
     void refresh();
@@ -53,7 +52,6 @@ private:
     QFileInfo fileInfo;
 
     DocumentType mDocumentType = NONE;
-    int mOrientation = 0;
     QString mFormat;
     QMimeType mMimeType;
 
@@ -67,14 +65,12 @@ private:
     static const QHash<QString, QString>& getKeyMapping();
 
     void detectFormat();
-    void loadExifOrientation();
 
     bool detectAPNG();
     bool detectAnimatedWebP();
     bool detectAnimatedJxl();
     bool detectAnimatedAvif();
 
-    int transformationToExifOrientation(QImageIOHandler::Transformations transformation) const;
     QString formatMetadataValue(const QString &key, const QVariant &value) const;
 
     const QByteArray& headerData(qint64 size = 128) const;

@@ -57,7 +57,6 @@ DocumentType DocumentInfo::type() const { return mDocumentType; }
 QMimeType DocumentInfo::mimeType() const { return mMimeType; }
 QString DocumentInfo::format() const { return mFormat; }
 QDateTime DocumentInfo::lastModified() const { return fileInfo.lastModified(); }
-int DocumentInfo::exifOrientation() const { return mOrientation; }
 
 void DocumentInfo::refresh() { fileInfo.refresh(); }
 
@@ -155,7 +154,6 @@ void DocumentInfo::detectFormat() {
         }
     }
 
-    loadExifOrientation();
 }
 
 // ====================== detect impl ======================
@@ -187,35 +185,6 @@ bool DocumentInfo::detectAnimatedAvif() {
         return false;
 
     return std::memcmp(buf.constData() + 4, "ftypavis", 8) == 0;
-}
-
-// ====================== exif ======================
-
-int DocumentInfo::transformationToExifOrientation(QImageIOHandler::Transformations t) const {
-
-    if (t == QImageIOHandler::TransformationNone) return 1;
-    if (t == QImageIOHandler::TransformationRotate180) return 3;
-    if (t == QImageIOHandler::TransformationRotate90) return 6;
-    if (t == QImageIOHandler::TransformationRotate270) return 8;
-
-    if (t == QImageIOHandler::TransformationMirror) return 2;
-    if (t == QImageIOHandler::TransformationFlip) return 4;
-    if (t == (QImageIOHandler::TransformationMirror | QImageIOHandler::TransformationRotate270)) return 5;
-    if (t == (QImageIOHandler::TransformationMirror | QImageIOHandler::TransformationRotate90)) return 7;
-
-    return 1;
-}
-
-void DocumentInfo::loadExifOrientation() {
-
-    if(mDocumentType == VIDEO || mDocumentType == NONE)
-        return;
-
-    QImageReader reader(fileInfo.absoluteFilePath());
-
-    if(reader.canRead()) {
-        mOrientation = transformationToExifOrientation(reader.transformation());
-    }
 }
 
 // ====================== metadata ======================

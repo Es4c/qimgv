@@ -344,13 +344,16 @@ void DirectoryManager::addEntriesFromDirectory(std::vector<FSEntry> &entryVec, c
                 newEntry.path = path;
                 newEntry.isDirectory = false;
 
+                // 用 directory_entry 一次构造缓存状态，避免 file_size + last_write_time 两次独立 stat
                 std::error_code ec;
                 std::filesystem::path p(fileInfo.filePath().toStdWString());
-
-                newEntry.size = std::filesystem::file_size(p, ec);
+                std::filesystem::directory_entry de(p, ec);
                 if (ec) continue;
 
-                newEntry.modifyTime = std::filesystem::last_write_time(p, ec);
+                newEntry.size = de.file_size(ec);
+                if (ec) continue;
+
+                newEntry.modifyTime = de.last_write_time(ec);
                 if (ec) continue;
 
                 entryVec.emplace_back(std::move(newEntry));
