@@ -468,16 +468,32 @@ void DirectoryManager::setSortingMode(SortingMode mode) {
 }
 
 bool DirectoryManager::insertFileEntry(const QString &filePath) {
-    if(!isSupportedFile(filePath))
+    // 一次 directory_entry 构造同时完成类型判断与元数据获取，避免重复 stat
+    std::error_code ec;
+    std::filesystem::directory_entry stdEntry(std::filesystem::path(filePath.toStdWString()), ec);
+    if(ec || !stdEntry.is_regular_file(ec) || ec)
         return false;
-    return forceInsertFileEntry(filePath);
+
+    const qsizetype dot = filePath.lastIndexOf(u'.');
+    if(dot < 0 || dot == filePath.size() - 1)
+        return false;
+    if(!mSupportedSuffixes.contains(filePath.mid(dot + 1).toLower()))
+        return false;
+
+    return forceInsertFileEntry(filePath, stdEntry);
 }
 
 bool DirectoryManager::forceInsertFileEntry(const QString &filePath) {
-    if(!this->isFile(filePath) || containsFile(filePath))
+    std::error_code ec;
+    std::filesystem::directory_entry stdEntry(std::filesystem::path(filePath.toStdWString()), ec);
+    if(ec || !stdEntry.is_regular_file(ec) || ec)
         return false;
-    std::filesystem::path pathObj(filePath.toStdWString());
-    std::filesystem::directory_entry stdEntry(pathObj);
+    return forceInsertFileEntry(filePath, stdEntry);
+}
+
+bool DirectoryManager::forceInsertFileEntry(const QString &filePath, const std::filesystem::directory_entry &stdEntry) {
+    if(containsFile(filePath))
+        return false;
     QString fileName = QString::fromStdWString(stdEntry.path().filename().wstring());
     // 使用包装类构造 FSEntry
     FSEntry entry(FilePath(filePath), FileName(fileName), stdEntry.file_size(), stdEntry.last_write_time(), stdEntry.is_directory());
