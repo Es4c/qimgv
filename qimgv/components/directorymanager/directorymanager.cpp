@@ -1,4 +1,6 @@
 #include "directorymanager.h"
+#include <QDateTime>
+#include <chrono>
 
 namespace fs = std::filesystem;
 
@@ -344,17 +346,15 @@ void DirectoryManager::addEntriesFromDirectory(std::vector<FSEntry> &entryVec, c
                 newEntry.path = path;
                 newEntry.isDirectory = false;
 
-                // 用 directory_entry 一次构造缓存状态，避免 file_size + last_write_time 两次独立 stat
-                std::error_code ec;
-                std::filesystem::path p(fileInfo.filePath().toStdWString());
-                std::filesystem::directory_entry de(p, ec);
-                if (ec) continue;
-
-                newEntry.size = de.file_size(ec);
-                if (ec) continue;
-
-                newEntry.modifyTime = de.last_write_time(ec);
-                if (ec) continue;
+                // entryInfoList() 返回的 QFileInfo 已携带文件元数据：
+                // Windows 由 FindFirstFile 填充缓存（0 次额外 stat）；
+                // 其它平台首次访问时一次 stat 并整体缓存，与 directory_entry 持平
+                newEntry.size = fileInfo.size();
+                const QDateTime modTime = fileInfo.lastModified();
+                if(!modTime.isValid())
+                    continue;
+                newEntry.modifyTime = std::chrono::clock_cast<std::chrono::file_clock>(
+                    std::chrono::system_clock::time_point(std::chrono::milliseconds(modTime.toMSecsSinceEpoch())));
 
                 entryVec.emplace_back(std::move(newEntry));
             }
