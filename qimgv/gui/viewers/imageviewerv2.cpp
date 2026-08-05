@@ -343,11 +343,23 @@ void ImageViewerV2::onAnimationTimer()
         }
     }
 
-    // 使用 cacheKey() 比较，这是 Qt 推荐的轻量级比较方式
-    // 只有在需要更新时才获取 currentPixmap，避免不必要的拷贝
-    if (!pixmap || pixmap->cacheKey() != movie->currentPixmap().cacheKey()) {
-        updatePixmap(movie->currentPixmap());
+    // 只获取一次当前帧，避免重复拷贝
+    const QPixmap frame = movie->currentPixmap();
+    if (frame.isNull())
+        return;
+
+    // 缩小播放时直接走已缩放帧流水线，避免每帧全尺寸上传+绘制缩放
+    if (pixmapItem.scale() < 1.0f) {
+        const QSize target = scaledSizeR() * dpr;
+        if (target.isValid() && !target.isEmpty()) {
+            setScaledPixmap(frame.scaled(target, Qt::KeepAspectRatio, Qt::FastTransformation));
+            emit frameChanged(movie->currentFrameNumber());
+            animationTimer->start(movie->nextFrameDelay());
+            return;
+        }
     }
+
+    updatePixmap(frame);
 
     emit frameChanged(movie->currentFrameNumber());
     animationTimer->start(movie->nextFrameDelay());

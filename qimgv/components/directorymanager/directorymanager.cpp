@@ -5,8 +5,6 @@
 namespace fs = std::filesystem;
 
 DirectoryManager::DirectoryManager() {
-    regex.setPatternOptions(QRegularExpression::CaseInsensitiveOption);
-    
     // 关键修改：显式设置区域设置为系统默认，确保 NumericMode 生效
     collator.setLocale(QLocale::system());
     collator.setNumericMode(true);
@@ -104,7 +102,11 @@ void DirectoryManager::stopFileWatcher() {
 }
 
 void DirectoryManager::readSettings() {
-    regex.setPattern(settings->supportedFormatsRegex());
+    mSupportedSuffixes.clear();
+    const auto formats = settings->supportedFormats();
+    mSupportedSuffixes.reserve(static_cast<int>(formats.size()));
+    for(const auto &fmt : formats)
+        mSupportedSuffixes.insert(QString::fromLatin1(fmt).toLower());
 }
 
 // ==================== 索引映射维护方法 ====================
@@ -278,7 +280,12 @@ QDateTime DirectoryManager::lastModified(const QString &filePath) const {
 }
 
 inline bool DirectoryManager::isSupportedFile(const QString &path) const {
-    return (isFile(path) && regex.match(path).hasMatch());
+    if(!isFile(path))
+        return false;
+    const qsizetype dot = path.lastIndexOf(u'.');
+    if(dot < 0 || dot == path.size() - 1)
+        return false;
+    return mSupportedSuffixes.contains(path.mid(dot + 1).toLower());
 }
 
 bool DirectoryManager::isFile(const QString &path) const {
@@ -317,7 +324,6 @@ void DirectoryManager::loadEntryList(const QString &directoryPath, bool recursiv
 }
 
 void DirectoryManager::addEntriesFromDirectory(std::vector<FSEntry> &entryVec, const QString &directoryPath) {
-    QRegularExpressionMatch match;
     QDir dir(directoryPath);
 
     if (!dir.exists())
@@ -339,8 +345,8 @@ void DirectoryManager::addEntriesFromDirectory(std::vector<FSEntry> &entryVec, c
             newEntry.isDirectory = true;
             dirEntryVec.emplace_back(std::move(newEntry));
         } else {
-            match = regex.match(name);
-            if (match.hasMatch()) {
+            const QString suffix = fileInfo.suffix().toLower();
+            if (mSupportedSuffixes.contains(suffix)) {
                 FSEntry newEntry;
                 newEntry.name = name;
                 newEntry.path = path;
@@ -369,7 +375,6 @@ void DirectoryManager::addEntriesFromDirectory(std::vector<FSEntry> &entryVec, c
 }
 
 void DirectoryManager::addEntriesFromDirectoryRecursive(std::vector<FSEntry> &entryVec, const QString &directoryPath) {
-    QRegularExpressionMatch match;
     std::filesystem::path pathObj(directoryPath.toStdWString());
 
     std::error_code ec;
@@ -385,9 +390,11 @@ void DirectoryManager::addEntriesFromDirectoryRecursive(std::vector<FSEntry> &en
         QString name = QString::fromStdWString(entry.path().filename().wstring());
         QString path = QString::fromStdWString(entry.path().wstring());
 
-        match = regex.match(name);
+        const qsizetype dot = name.lastIndexOf(u'.');
+        const bool supported = (dot > 0 && dot < name.size() - 1)
+                               && mSupportedSuffixes.contains(name.mid(dot + 1).toLower());
 
-        if (!entry.is_directory(ec) && !ec && match.hasMatch()) {
+        if (!entry.is_directory(ec) && !ec && supported) {
             FSEntry newEntry;
             newEntry.name = name;
             newEntry.path = path;

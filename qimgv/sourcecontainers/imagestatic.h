@@ -52,4 +52,8 @@ private:
     
     std::shared_ptr<const QImage> image;
     std::shared_ptr<const QImage> imageEdited;
+
+    // QPixmap 缓存：QImage::cacheKey() 变化时自动失效
+    mutable QPixmap mCachedPixmap;
+    mutable qint64 mCachedPixmapKey = -1;
 };

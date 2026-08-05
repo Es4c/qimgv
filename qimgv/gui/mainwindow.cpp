@@ -1010,8 +1010,8 @@ void MW::adaptToWindowState() {
 void MW::paintEvent(QPaintEvent *event) {
     QPainter p(this);
 
-    // ⭐ 第一帧就强制填满（关键）
-    p.fillRect(rect(), QColor(0x1a, 0x1a, 0x1a));
+    // ⭐ 只填充实际脏区，避免整窗重复绘制
+    p.fillRect(event->region().boundingRect(), QColor(0x1a, 0x1a, 0x1a));
 
     // 再让子控件绘制
     QWidget::paintEvent(event);

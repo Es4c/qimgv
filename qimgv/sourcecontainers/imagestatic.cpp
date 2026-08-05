@@ -249,7 +249,16 @@ void ImageStatic::getPixmap(QPixmap& outPixmap) const {
         return;
     }
 
-    outPixmap = QPixmap::fromImage(img);
+    // 缓存命中：QImage::cacheKey() 在内容变化时自动改变（编辑/撤销/保存后）
+    const qint64 key = img.cacheKey();
+    if(key == mCachedPixmapKey && !mCachedPixmap.isNull()) {
+        outPixmap = mCachedPixmap; // 隐式共享，浅拷贝
+        return;
+    }
+
+    mCachedPixmap = QPixmap::fromImage(img);
+    mCachedPixmapKey = key;
+    outPixmap = mCachedPixmap;
 }
 
 std::shared_ptr<const QImage> ImageStatic::getSourceImage() const noexcept {

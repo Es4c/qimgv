@@ -5,8 +5,8 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QDateTime>
-#include <QRegularExpression>
 #include <QCollator>
+#include <QSet>
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
@@ -140,7 +140,7 @@ private:
     void updateDirIndexAfterRemove(const QString &path, int index);
 
 private:
-    QRegularExpression regex;
+    QSet<QString> mSupportedSuffixes;
     QCollator collator;
     std::vector<FSEntry> fileEntryVec, dirEntryVec;
     const FSEntry defaultEntry;
