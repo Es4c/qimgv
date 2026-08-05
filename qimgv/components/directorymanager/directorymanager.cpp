@@ -353,8 +353,14 @@ void DirectoryManager::addEntriesFromDirectory(std::vector<FSEntry> &entryVec, c
                 const QDateTime modTime = fileInfo.lastModified();
                 if(!modTime.isValid())
                     continue;
-                newEntry.modifyTime = std::chrono::clock_cast<std::chrono::file_clock>(
-                    std::chrono::system_clock::time_point(std::chrono::milliseconds(modTime.toMSecsSinceEpoch())));
+                // file_clock 与 system_clock 的 epoch 偏移（运行时推导，避免依赖 clock_cast）
+                static const auto fileSysOffset = std::chrono::duration_cast<std::chrono::file_clock::duration>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::file_clock::now().time_since_epoch())
+                    - std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()));
+                newEntry.modifyTime = std::chrono::file_clock::time_point(
+                    std::chrono::duration_cast<std::chrono::file_clock::duration>(
+                        std::chrono::milliseconds(modTime.toMSecsSinceEpoch()))
+                    + fileSysOffset);
 
                 entryVec.emplace_back(std::move(newEntry));
             }
