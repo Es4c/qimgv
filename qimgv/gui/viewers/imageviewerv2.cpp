@@ -413,6 +413,7 @@ void ImageViewerV2::updatePixmap(const QPixmap& newPixmap)
     *pixmap = newPixmap;
     pixmap->setDevicePixelRatio(dpr);
 
+    pixmapItemScaled.hide();
     pixmapItem.setPixmap(*pixmap);
     if (!pixmapItem.isVisible())
         pixmapItem.show();
@@ -426,6 +427,7 @@ void ImageViewerV2::updatePixmap(QPixmap&& newPixmap)
     *pixmap = std::move(newPixmap);
     pixmap->setDevicePixelRatio(dpr);
 
+    pixmapItemScaled.hide();
     pixmapItem.setPixmap(*pixmap);
     if (!pixmapItem.isVisible())
         pixmapItem.show();
