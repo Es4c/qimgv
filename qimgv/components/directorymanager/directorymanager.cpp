@@ -334,7 +334,8 @@ void DirectoryManager::addEntriesFromDirectory(std::vector<FSEntry> &entryVec, c
     for (const auto& entry : it) {
         const auto &fsPath = entry.path();
         QString name = QString::fromStdWString(fsPath.filename().wstring());
-        QString path = QString::fromStdWString(fsPath.wstring());
+        // generic_wstring(): Windows 上统一正斜杠分隔，与 Qt 全局路径约定（QFileInfo::absoluteFilePath()）一致
+        QString path = QString::fromStdWString(fsPath.generic_wstring());
 
         if (entry.is_directory(ec) && !ec) {
             FSEntry newEntry;
@@ -378,7 +379,8 @@ void DirectoryManager::addEntriesFromDirectoryRecursive(std::vector<FSEntry> &en
 
     for (const auto& entry : it) {
         QString name = QString::fromStdWString(entry.path().filename().wstring());
-        QString path = QString::fromStdWString(entry.path().wstring());
+        // generic_wstring(): 顺带修复递归扫描同款反斜杠路径回归
+        QString path = QString::fromStdWString(entry.path().generic_wstring());
 
         const qsizetype dot = name.lastIndexOf(u'.');
         const bool supported = (dot > 0 && dot < name.size() - 1)
