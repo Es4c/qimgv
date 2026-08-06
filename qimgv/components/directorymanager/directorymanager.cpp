@@ -308,6 +308,9 @@ void DirectoryManager::loadEntryList(const QString &directoryPath, bool recursiv
     fileEntryVec.clear();
     mFileIndexMap.clear();
     mDirIndexMap.clear();
+    // 重置增量排序标志，确保 directory_iterator 无序结果被正确排序
+    mFilesSorted = false;
+    mDirsSorted = false;
     // 预分配容量，减少内存重分配
     fileEntryVec.reserve(1000);
     dirEntryVec.reserve(100);
@@ -323,47 +326,37 @@ void DirectoryManager::loadEntryList(const QString &directoryPath, bool recursiv
 }
 
 void DirectoryManager::addEntriesFromDirectory(std::vector<FSEntry> &entryVec, const QString &directoryPath) {
-    QDir dir(directoryPath);
+    std::filesystem::path pathObj(directoryPath.toStdWString());
+    std::error_code ec;
+    fs::directory_iterator it(pathObj, fs::directory_options::skip_permission_denied, ec);
+    if (ec) return;
 
-    if (!dir.exists())
-        return;
+    for (const auto& entry : it) {
+        const auto &fsPath = entry.path();
+        QString name = QString::fromStdWString(fsPath.filename().wstring());
+        QString path = QString::fromStdWString(fsPath.wstring());
 
-    QDir::Filters filters = QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot;
-    QDir::SortFlags sortFlags = QDir::Name | QDir::IgnoreCase;
-
-    QFileInfoList entries = dir.entryInfoList(filters, sortFlags);
-
-    for (const QFileInfo &fileInfo : entries) {
-        QString name = fileInfo.fileName();
-        QString path = fileInfo.absoluteFilePath();
-
-        if (fileInfo.isDir()) {
+        if (entry.is_directory(ec) && !ec) {
             FSEntry newEntry;
             newEntry.name = name;
             newEntry.path = path;
             newEntry.isDirectory = true;
             dirEntryVec.emplace_back(std::move(newEntry));
-        } else {
-            const QString suffix = fileInfo.suffix().toLower();
-            if (mSupportedSuffixes.contains(suffix)) {
+        } else if (!ec) {
+            const qsizetype dot = name.lastIndexOf(u'.');
+            const bool supported = (dot > 0 && dot < name.size() - 1)
+                                   && mSupportedSuffixes.contains(name.mid(dot + 1).toLower());
+            if (supported) {
                 FSEntry newEntry;
                 newEntry.name = name;
                 newEntry.path = path;
                 newEntry.isDirectory = false;
 
-                // size 保留 QFileInfo 缓存优化（Windows 由 FindFirstFile 填充，0 次额外 stat）
-                const qint64 size = fileInfo.size();
-                if (size < 0)
-                    continue;
-                newEntry.size = static_cast<std::uintmax_t>(size);
-
-                // modifyTime 统一使用 std::filesystem::last_write_time()
-                // 与递归扫描、insertFileEntry、updateFileEntry 等路径保持一致
-                std::error_code ec;
-                std::filesystem::path pathObj(path.toStdWString());
-                newEntry.modifyTime = std::filesystem::last_write_time(pathObj, ec);
-                if (ec)
-                    continue;
+                std::error_code ec2;
+                newEntry.size = entry.file_size(ec2);
+                if (ec2) continue;
+                newEntry.modifyTime = entry.last_write_time(ec2);
+                if (ec2) continue;
 
                 entryVec.emplace_back(std::move(newEntry));
             }
