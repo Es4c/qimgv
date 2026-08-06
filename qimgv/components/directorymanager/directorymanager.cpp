@@ -1,6 +1,5 @@
 #include "directorymanager.h"
 #include <QDateTime>
-#include <chrono>
 
 namespace fs = std::filesystem;
 
@@ -352,21 +351,19 @@ void DirectoryManager::addEntriesFromDirectory(std::vector<FSEntry> &entryVec, c
                 newEntry.path = path;
                 newEntry.isDirectory = false;
 
-                // entryInfoList() 返回的 QFileInfo 已携带文件元数据：
-                // Windows 由 FindFirstFile 填充缓存（0 次额外 stat）；
-                // 其它平台首次访问时一次 stat 并整体缓存，与 directory_entry 持平
-                newEntry.size = fileInfo.size();
-                const QDateTime modTime = fileInfo.lastModified();
-                if(!modTime.isValid())
+                // size 保留 QFileInfo 缓存优化（Windows 由 FindFirstFile 填充，0 次额外 stat）
+                const qint64 size = fileInfo.size();
+                if (size < 0)
                     continue;
-                // file_clock 与 system_clock 的 epoch 偏移（运行时推导，避免依赖 clock_cast）
-                static const auto fileSysOffset = std::chrono::duration_cast<std::chrono::file_clock::duration>(
-                    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::file_clock::now().time_since_epoch())
-                    - std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()));
-                newEntry.modifyTime = std::chrono::file_clock::time_point(
-                    std::chrono::duration_cast<std::chrono::file_clock::duration>(
-                        std::chrono::milliseconds(modTime.toMSecsSinceEpoch()))
-                    + fileSysOffset);
+                newEntry.size = static_cast<std::uintmax_t>(size);
+
+                // modifyTime 统一使用 std::filesystem::last_write_time()
+                // 与递归扫描、insertFileEntry、updateFileEntry 等路径保持一致
+                std::error_code ec;
+                std::filesystem::path pathObj(path.toStdWString());
+                newEntry.modifyTime = std::filesystem::last_write_time(pathObj, ec);
+                if (ec)
+                    continue;
 
                 entryVec.emplace_back(std::move(newEntry));
             }
@@ -647,8 +644,6 @@ void DirectoryManager::renameDirEntry(const DirPath& oldDirPath, const DirName& 
     dirEntryVec.erase(dirEntryVec.begin() + oldIndex);
 
     // 构造新条目并插入
-    std::filesystem::path pathObj(newDirPath.toStdWString());
-    std::filesystem::directory_entry stdEntry(pathObj);
     FSEntry newEntry;
     newEntry.name = newDirName.value;
     newEntry.path = newDirPath;
