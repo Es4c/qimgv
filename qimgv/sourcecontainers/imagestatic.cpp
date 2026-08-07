@@ -62,6 +62,14 @@ void ImageStatic::loadGeneric() {
         }
     }
 
+    // 缓存文本元数据（EXIF），保存时避免再次打开原文件
+    for(const QString &key : reader.textKeys()) {
+        const QString value = reader.text(key);
+        if(!value.isEmpty()) {
+            mTextMetadata.insert(key, value);
+        }
+    }
+
     QImage image = std::move(imageData);
 
     // ✅ 修复：只在合法 EXIF 范围内处理
@@ -88,30 +96,51 @@ void ImageStatic::loadGeneric() {
 }
 
 void ImageStatic::loadICO() {
-    // ICO 加载逻辑
-    const QIcon icon(mPath);
-    const auto sizes = icon.availableSizes();
-    if(sizes.isEmpty()) {
-        qWarning() << "ImageStatic::loadICO() - No sizes available in ICO file:" << mPath;
+    // ICO 加载逻辑：只解码面积最大的一帧，避免 QIcon 把所有尺寸都解出来
+    QImageReader reader(mPath);
+    const int count = reader.imageCount();
+    if(count <= 0) {
+        qWarning() << "ImageStatic::loadICO() - No images available in ICO file:" << mPath;
         return;
     }
 
-    const auto maxSizeIt = std::max_element(
-        sizes.constBegin(), sizes.constEnd(),
-        [](const QSize &a, const QSize &b) { return a.width() < b.width(); }
-    );
-
-    const QPixmap iconPix = icon.pixmap(*maxSizeIt);
-    if(!iconPix.isNull()) {
-        image = std::make_shared<const QImage>(iconPix.toImage());
-        mLoaded = true;
+    // 只读尺寸不解码，按面积选最大帧
+    int bestIndex = 0;
+    int bestArea = 0;
+    for(int i = 0; i < count; ++i) {
+        if(!reader.jumpToImage(i)) {
+            continue;
+        }
+        const QSize s = reader.size();
+        const int area = s.width() * s.height();
+        if(area > bestArea) {
+            bestArea = area;
+            bestIndex = i;
+        }
     }
+    if(bestArea <= 0) {
+        qWarning() << "ImageStatic::loadICO() - No valid frames in ICO file:" << mPath;
+        return;
+    }
+
+    if(!reader.jumpToImage(bestIndex)) {
+        qWarning() << "ImageStatic::loadICO() - Failed to select frame:" << mPath;
+        return;
+    }
+
+    QImage img;
+    if(!reader.read(&img) || img.isNull()) {
+        qWarning() << "ImageStatic::loadICO() - Failed to decode frame:" << mPath;
+        return;
+    }
+
+    image = std::make_shared<const QImage>(std::move(img));
+    mLoaded = true;
 }
 
 QString ImageStatic::generateHash(QStringView str) noexcept {
-    // Qt 6: QCryptographicHash 支持 QStringView
-    const auto hash = QCryptographicHash::hash(str.toUtf8(), QCryptographicHash::Md5);
-    return hash.toHex();
+    // 备份后缀只需唯一标识，qHash 足够，避免 MD5 开销
+    return QString::number(static_cast<qulonglong>(qHash(str)), 16);
 }
 
 int ImageStatic::getSaveQuality(QStringView ext) noexcept {
@@ -174,14 +203,8 @@ bool ImageStatic::save(QString destPath) {
     // 保留原始图片的元数据（特别是 EXIF 中的文本字段）
     // 这修复了编辑后保存图片时中文标题变乱码的问题
     if(destPath == mPath || isEdited()) {
-        // 从原始文件读取元数据
-        QImageReader reader(mPath);
-        QStringList textKeys = reader.textKeys();
-        for(const QString &key : textKeys) {
-            QString value = reader.text(key);
-            if(!value.isEmpty()) {
-                writer.setText(key, value);
-            }
+        for(auto it = mTextMetadata.constBegin(); it != mTextMetadata.constEnd(); ++it) {
+            writer.setText(it.key(), it.value());
         }
     }
     

@@ -3,8 +3,7 @@
 #include <QImage>
 #include <QImageReader>
 #include <QImageWriter>
-#include <QCryptographicHash>
-#include <QIcon>
+#include <QHash>
 #include <QStringView>
 #include <optional>
 #include <memory>
@@ -52,6 +51,9 @@ private:
     
     std::shared_ptr<const QImage> image;
     std::shared_ptr<const QImage> imageEdited;
+
+    // 加载时缓存的文本元数据（EXIF），保存时复用，避免每次重新打开原文件
+    QHash<QString, QString> mTextMetadata;
 
     // QPixmap 缓存：QImage::cacheKey() 变化时自动失效
     mutable QPixmap mCachedPixmap;
