@@ -13,6 +13,8 @@ ImageInfoOverlayProxy::~ImageInfoOverlayProxy() {
 
 void ImageInfoOverlayProxy::show() {
     init();
+    if(!stateBuf.info.isEmpty())
+        overlay->setExifInfo(stateBuf.info);
     overlay->show();
 }
 
@@ -33,8 +35,7 @@ bool ImageInfoOverlayProxy::isHidden() {
 }
 
 void ImageInfoOverlayProxy::setExifInfo(const QHash<QString, QString>& _info) {
-    if(overlay)
+    stateBuf.info = _info;
+    if(overlay && !overlay->isHidden())
         overlay->setExifInfo(_info);
-    else
-        stateBuf.info = _info;
 }

@@ -761,6 +761,18 @@ void MW::closeFullScreenOrExit() {
 }
 
 void MW::setCurrentInfo(int _index, int _fileCount, const QString& _filePath, const QString& _fileName, QSize _imageSize, qint64 _fileSize, bool slideshow, bool shuffle, bool edited) {
+    // 所有字段未变化时跳过整个 UI 更新链
+    if(info.index == _index &&
+       info.fileCount == _fileCount &&
+       info.filePath == _filePath &&
+       info.fileName == _fileName &&
+       info.imageSize == _imageSize &&
+       info.fileSize == _fileSize &&
+       info.slideshow == slideshow &&
+       info.shuffle == shuffle &&
+       info.edited == edited)
+        return;
+
     info.index = _index;
     info.fileCount = _fileCount;
     info.fileName = _fileName;
@@ -773,17 +785,13 @@ void MW::setCurrentInfo(int _index, int _fileCount, const QString& _filePath, co
     onInfoUpdated();
 }
 
-QString MW::calculateWindowTitle() {
+QString MW::calculateWindowTitle(bool zoomLock, bool viewLock, bool showStates) {
     if(info.fileName.isEmpty()) {
         return qApp->applicationName();
     }
 
     QString windowTitle;
     windowTitle.reserve(128); // ⭐ 避免反复 realloc
-
-    // 预取状态（避免重复调用）
-    const bool zoomLock = viewerWidget->lockZoomEnabled();
-    const bool viewLock = viewerWidget->lockViewEnabled();
 
     if(settings->windowTitleExtendedInfo()) {
         if(info.fileCount) {
@@ -807,7 +815,7 @@ QString MW::calculateWindowTitle() {
 
         if(info.fileSize) {
             windowTitle += u"  -  "_s
-                         + locale().formattedDataSize(info.fileSize, 1);
+                         + m_locale.formattedDataSize(info.fileSize, 1);
         }
     }
 
@@ -819,7 +827,7 @@ QString MW::calculateWindowTitle() {
     if(zoomLock)       states += u" [zoom lock]"_s;
     if(viewLock)       states += u" [view lock]"_s;
 
-    if(!settings->infoBarWindowed() && !states.isEmpty()) {
+    if(showStates && !states.isEmpty()) {
         windowTitle += u" -"_s + states;
     }
 
@@ -830,15 +838,12 @@ QString MW::calculateWindowTitle() {
     return windowTitle;
 }
 
-void MW::calculateInfoBarContent(QString& infoText, QString& sizeText) {
+void MW::calculateInfoBarContent(QString& infoText, QString& sizeText, bool zoomLock, bool viewLock, bool showStates) {
     if(info.fileName.isEmpty()) {
         infoText = tr("No file opened.");
         sizeText.clear();
         return;
     }
-
-    const bool zoomLock = viewerWidget->lockZoomEnabled();
-    const bool viewLock = viewerWidget->lockViewEnabled();
 
     infoText = info.fileName;
     if(info.edited)
@@ -853,7 +858,7 @@ void MW::calculateInfoBarContent(QString& infoText, QString& sizeText) {
 
     QString sizeString;
     if(info.fileSize)
-        sizeString = locale().formattedDataSize(info.fileSize, 1);
+        sizeString = m_locale.formattedDataSize(info.fileSize, 1);
 
     sizeText.clear();
     sizeText.reserve(resString.size() + sizeString.size() + 32);
@@ -871,30 +876,43 @@ void MW::calculateInfoBarContent(QString& infoText, QString& sizeText) {
     if(zoomLock)       states += u" [zoom lock]"_s;
     if(viewLock)       states += u" [view lock]"_s;
 
-    if(!settings->infoBarWindowed() && !states.isEmpty())
+    if(showStates && !states.isEmpty())
         sizeText += u" "_s + states;
 }
 
 void MW::onInfoUpdated() {
     if(renameOverlay)
         renameOverlay->setName(info.fileName);
-    
-    setWindowTitle(calculateWindowTitle());
-    
+
+    // 公共状态只取一次，两个计算函数共用
+    const bool zoomLock = viewerWidget->lockZoomEnabled();
+    const bool viewLock = viewerWidget->lockViewEnabled();
+    const bool showStates = !settings->infoBarWindowed();
+
+    const QString newTitle = calculateWindowTitle(zoomLock, viewLock, showStates);
+    if(newTitle != m_lastWindowTitle) {
+        m_lastWindowTitle = newTitle;
+        setWindowTitle(newTitle);
+    }
+
     QString infoText, sizeText;
-    calculateInfoBarContent(infoText, sizeText);
-    
+    calculateInfoBarContent(infoText, sizeText, zoomLock, viewLock, showStates);
+
     QString posString;
     if(info.fileCount)
         posString = u"[ %1/%2 ]"_s.arg(info.index + 1).arg(info.fileCount);
-    
-    infoBarFullscreen->setInfo(posString, infoText, sizeText);
-    infoBarWindowed->setInfo(posString, infoText, sizeText);
+
+    // 只更新当前可见的 info bar
+    if(isFullScreen())
+        infoBarFullscreen->setInfo(posString, infoText, sizeText);
+    else
+        infoBarWindowed->setInfo(posString, infoText, sizeText);
 }
 
 void MW::setExifInfo(const QHash<QString, QString> &info) {
     m_exifInfo = info;
-    if(imageInfoOverlay)
+    // overlay 不可见时跳过更新，显示时再同步
+    if(imageInfoOverlay && !imageInfoOverlay->isHidden())
         imageInfoOverlay->setExifInfo(info);
 }
 
@@ -1005,13 +1023,16 @@ void MW::adaptToWindowState() {
     }
     docWidget->onFullscreenModeChanged(isFullScreen());
     viewerWidget->onFullscreenModeChanged(isFullScreen());
+    // 切换全屏/窗口模式后同步当前可见 info bar 的数据
+    onInfoUpdated();
 }
 
 void MW::paintEvent(QPaintEvent *event) {
+    static const QColor bgColor(0x1a, 0x1a, 0x1a);
     QPainter p(this);
 
     // ⭐ 只填充实际脏区，避免整窗重复绘制
-    p.fillRect(event->region().boundingRect(), QColor(0x1a, 0x1a, 0x1a));
+    p.fillRect(event->region().boundingRect(), bgColor);
 
     // 再让子控件绘制
     QWidget::paintEvent(event);

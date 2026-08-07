@@ -2,6 +2,7 @@
 #include <QHBoxLayout>
 #include <QTimer>
 #include <QHash>
+#include <QLocale>
 #include <QSize>
 #include <QString>
 #include <QMouseEvent>
@@ -106,6 +107,8 @@ private:
     QHash<QString, QString> m_exifInfo;  // 优化：使用 QHash 代替 QMap
     bool fullUiInitialized = false;
     bool firstShowHandled = false;
+    QString m_lastWindowTitle;
+    QLocale m_locale;
 
     void saveWindowGeometry();
     void restoreWindowGeometry();
@@ -124,9 +127,9 @@ private:
     void setInteractionEnabled(bool mode);
 
     // 辅助方法
-    QString calculateWindowTitle();
+    QString calculateWindowTitle(bool zoomLock, bool viewLock, bool showStates);
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-    void calculateInfoBarContent(QString& infoText, QString& sizeText);
+    void calculateInfoBarContent(QString& infoText, QString& sizeText, bool zoomLock, bool viewLock, bool showStates);
 
 private slots:
     void updateCurrentDisplay();
