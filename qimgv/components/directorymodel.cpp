@@ -235,9 +235,11 @@ bool DirectoryModel::saveFile(const QString &filePath) {
 }
 
 bool DirectoryModel::saveFile(const QString &filePath, const QString &destPath) {
-    if(!containsFile(filePath) || !cache.contains(filePath))
+    if(!containsFile(filePath))
         return false;
     auto img = cache.get(filePath);
+    if(!img)
+        return false;
     if(img->save(destPath)) {
         if(filePath == destPath) {
             // replace
@@ -249,13 +251,13 @@ bool DirectoryModel::saveFile(const QString &filePath, const QString &destPath) 
             QFileInfo fiSrc(filePath);
             QFileInfo fiDest(destPath);
             if(fiSrc.absolutePath() == fiDest.absolutePath()) {
-                if(dirManager.containsFile(destPath)) {
+                if(dirManager.insertFileEntry(destPath)) {
+                    // 新文件已插入（insertFileEntry 内部会 emit fileAdded，
+                    // 此处不再 emit，避免 DirectoryPresenter 重复插入列表项）
+                } else if(dirManager.containsFile(destPath)) {
                     // destination file exists - overwrite
                     dirManager.updateFileEntry(destPath);
                     emit fileModified(destPath);
-                } else if(dirManager.insertFileEntry(destPath)) {
-                    // new file added
-                    emit fileAdded(destPath);
                 }
             }
         }
@@ -275,8 +277,9 @@ void DirectoryModel::onFileAdded(const QString &filePath) {
 
 void DirectoryModel::onFileModified(const QString &filePath) {
     // updateFileEntry 仅在 modifyTime 变化时 emit（emit 前已完成 stat），
-    // 这里内联 reload 逻辑以避免 reload 内部再次调用 updateFileEntry 造成重复 stat
-    if (auto img = cache.get(filePath)) {
+    // 这里内联 reload 逻辑以避免 reload 内部再次调用 updateFileEntry 造成重复 stat；
+    // 探测用 contains 而非 get：随即就要 remove，避免 get 的原子引用计数与 LRU 访问队列开销
+    if (cache.contains(filePath)) {
         cache.remove(filePath);
         load(filePath, false);
     }
@@ -319,12 +322,11 @@ void DirectoryModel::updateImage(const QString &filePath, const std::shared_ptr<
     if(!containsFile(filePath))
         return;
 
-    bool inCache = cache.contains(filePath);
-    cache.insert(img);
-    if(inCache)
-        emit imageUpdated(filePath);
-    else
+    // insert 返回"是否新增"：已存在则原地更新（返回 false），免去一次 contains 加锁查找
+    if(cache.insert(img))
         emit imageReady(img, filePath);
+    else
+        emit imageUpdated(filePath);
 }
 
 void DirectoryModel::load(const QString &filePath, bool asyncHint) {
