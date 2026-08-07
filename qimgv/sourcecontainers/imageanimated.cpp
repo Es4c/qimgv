@@ -70,7 +70,9 @@ int ImageAnimated::nextFrameDelay() const {
 }
 
 bool ImageAnimated::isValid() const {
-    return mReader && mFrameCount > 0;
+    // 有效 = 至少解出第 0 帧；imageCount() 返回 0/-1（帧数未知）时也能显示，
+    // 不再要求扫描帧数 > 0（旧实现此处会把可读但帧数未知的 WebP/AVIF 判死为空白）
+    return mReader && !mFrames.isEmpty();
 }
 
 bool ImageAnimated::jumpToFrame(int frameNumber) {
