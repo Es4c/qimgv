@@ -25,7 +25,6 @@ public:
     const QString &prevOf(const QString &filePath) const;
     const QString &firstFile() const;
     const QString &lastFile() const;
-    const QDateTime lastModified(const QString &filePath) const;
     bool forceInsert(const QString &filePath);
     void copyFileTo(const QString &srcFile, const QString &destDirPath, bool force, FileOpResult &result);
     void moveFileTo(const QString &srcFile, const QString &destDirPath, bool force, FileOpResult &result);

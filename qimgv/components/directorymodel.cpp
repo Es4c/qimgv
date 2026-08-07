@@ -108,10 +108,6 @@ const QString &DirectoryModel::prevOf(const QString &filePath) const {
     return dirManager.prevOfFile(filePath);
 }
 
-const QDateTime DirectoryModel::lastModified(const QString &filePath) const {
-    return dirManager.lastModified(filePath);
-}
-
 // -----------------------------------------------------------------------------
 bool DirectoryModel::forceInsert(const QString &filePath) {
     return dirManager.forceInsertFileEntry(filePath);
@@ -251,13 +247,15 @@ bool DirectoryModel::saveFile(const QString &filePath, const QString &destPath) 
             QFileInfo fiSrc(filePath);
             QFileInfo fiDest(destPath);
             if(fiSrc.absolutePath() == fiDest.absolutePath()) {
-                if(dirManager.insertFileEntry(destPath)) {
-                    // 新文件已插入（insertFileEntry 内部会 emit fileAdded，
-                    // 此处不再 emit，避免 DirectoryPresenter 重复插入列表项）
-                } else if(dirManager.containsFile(destPath)) {
+                // 先查模型再决定分支，避免 overwrite 路径上 insertFileEntry
+                // 多做一次 directory_entry stat 后才在 containsFile 处失败
+                if(dirManager.containsFile(destPath)) {
                     // destination file exists - overwrite
                     dirManager.updateFileEntry(destPath);
                     emit fileModified(destPath);
+                } else if(dirManager.insertFileEntry(destPath)) {
+                    // 新文件已插入（insertFileEntry 内部会 emit fileAdded，
+                    // 此处不再 emit，避免 DirectoryPresenter 重复插入列表项）
                 }
             }
         }

@@ -4,7 +4,6 @@
 #include <QString>
 #include <QDir>
 #include <QFileInfo>
-#include <QDateTime>
 #include <QCollator>
 #include <QSet>
 #include <QTimer>
@@ -79,7 +78,6 @@ public:
     const QString &prevOfDir(const QString &dirPath) const;
     const QString &nextOfDir(const QString &dirPath) const;
     void sortEntryLists();
-    QDateTime lastModified(const QString &filePath) const;
     const QString &firstFile() const;
     const QString &lastFile() const;
     void setSortingMode(SortingMode mode);

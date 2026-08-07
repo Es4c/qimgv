@@ -1,7 +1,5 @@
 #include "directorymanager.h"
-#include <QDateTime>
 #include <QHash>
-#include <chrono>
 #include <iterator>
 
 namespace fs = std::filesystem;
@@ -281,18 +279,6 @@ const FSEntry &DirectoryManager::fileEntryAt(int index) const {
     if(checkFileRange(index))
         return fileEntryVec.at(index);
     return defaultEntry;
-}
-
-QDateTime DirectoryManager::lastModified(const QString &filePath) const {
-    // ⭐ 直接使用缓存的 modifyTime，避免对每个文件重复 stat
-    const int index = indexOfFile(filePath);
-    if(index < 0)
-        return {};
-    const auto &entry = fileEntryVec.at(index);
-    const auto sysTime = std::chrono::file_clock::to_sys(entry.modifyTime);
-    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        sysTime.time_since_epoch()).count();
-    return QDateTime::fromMSecsSinceEpoch(ms, Qt::LocalTime);
 }
 
 bool DirectoryManager::isSupportedSuffix(const QStringView &suffix) const {
