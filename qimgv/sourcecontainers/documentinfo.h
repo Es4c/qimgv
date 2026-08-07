@@ -68,10 +68,9 @@ private:
 
     bool detectAPNG();
     bool detectAnimatedWebP();
-    bool detectAnimatedJxl();
     bool detectAnimatedAvif();
 
     QString formatMetadataValue(const QString &key, const QVariant &value) const;
 
-    const QByteArray& headerData(qint64 size = 128) const;
+    const QByteArray& headerData() const;
 };
