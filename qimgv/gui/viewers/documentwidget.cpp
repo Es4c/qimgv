@@ -59,9 +59,8 @@ void DocumentWidget::setPanelPinned(bool mode) {
             layout->removeWidget(mainPanel);
         mainPanel->setLayoutManaged(false);
     } else {    // pin
-        if(mPanelPinned)
-            return; // 已 pin，避免重复 insertWidget 触发无谓的 relayout
-        layout->insertWidget(1, mainPanel);
+        if(!mPanelPinned)
+            layout->insertWidget(1, mainPanel); // 已 pin 时跳过重复 insert，避免无谓 relayout
         const PanelPosition pos = settings->panelPosition();
         switch(pos) {
             case PANEL_TOP:
