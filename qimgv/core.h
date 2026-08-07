@@ -8,6 +8,8 @@
 #include <QFileSystemModel>
 #include <QDesktopServices>
 #include <QTranslator>
+#include <QSettings>
+#include <QHash>
 #include "appversion.h"
 #include "settings.h"
 #include "components/directorymodel.h"
@@ -50,8 +52,6 @@ public slots:
     bool loadPath(const QString& path);
 
 private:
-    QElapsedTimer t;
-
     void initGui();
     void initComponents();
     void connectComponents();
@@ -79,12 +79,21 @@ private:
     QMimeData *getMimeDataForImage(const std::shared_ptr<Image>& img, MimeDataTarget target);
     QTranslator *translator = nullptr;
 
+    // 复用 QSettings 实例，避免每次访问注册表都重建（含锁开销）
+    QSettings appSettings;
+    // 编辑图临时导出时的 cacheKey 缓存（随文件删除/改名/reset 失效）
+    QHash<QString, qint64> editedImageCacheKeys;
+    // currentSelection() 复用单元素列表，避免每次调用分配
+    QList<QString> mCurrentSelection;
+    // setupFullUi 与版本检查只调度一次
+    bool fullUiInitialized = false;
+
     Randomizer randomizer;
     void syncRandomizer();
     
 
     void attachModel(std::unique_ptr<DirectoryModel> _model);
-    QString selectedPath();
+    const QString &selectedPath();
     void guiSetImage(const std::shared_ptr<Image>& img);
     QTimer slideshowTimer;
 
@@ -96,7 +105,7 @@ private:
     bool saveFile(const QString &filePath);
 
     std::shared_ptr<ImageStatic> getEditableImage(const QString &filePath);
-    QList<QString> currentSelection();
+    const QList<QString> &currentSelection();
 
     template<typename Func, typename... Args>
     void edit_template(bool save, const QString& action, Func editFunc, Args&&... as) {
@@ -106,7 +115,7 @@ private:
             return;
 
         // 优化：预先提取选中路径，避免循环内重复调用
-        const auto paths = currentSelection();
+        const auto& paths = currentSelection();
         for(const auto& path : paths) {
             auto img = getEditableImage(path);
             if(!img)

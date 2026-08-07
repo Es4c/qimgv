@@ -21,8 +21,7 @@ Core::Core()
     slideshowTimer.setSingleShot(true);
     connect(settings, &Settings::settingsChanged, this, &Core::readSettings);
 
-    QSettings qsettings;
-    lastClipboardSaveFormat = qsettings.value("clipboard/saveFormat", "jxl").toString().toLower();
+    lastClipboardSaveFormat = appSettings.value("clipboard/saveFormat", "jxl").toString().toLower();
     if(lastClipboardSaveFormat.isEmpty())
         lastClipboardSaveFormat = "jxl";
 }
@@ -48,6 +47,11 @@ void Core::showGui() {
             mw->setWindowOpacity(1.0);
         });
     }
+
+    // setupFullUi 与版本检查只调度一次（视频加载时 guiSetImage 会重复调用 showGui）
+    if(fullUiInitialized)
+        return;
+    fullUiInitialized = true;
 
     QTimer::singleShot(0, mw.get(), &MW::setupFullUi);
 
@@ -317,7 +321,7 @@ void Core::close() {
 }
 
 void Core::removePermanent() {
-    auto paths = currentSelection();
+    const auto& paths = currentSelection();
     if(!paths.count())
         return;
     if(settings->confirmDelete()) {
@@ -351,7 +355,7 @@ void Core::removePermanent() {
 }
 
 void Core::moveToTrash() {
-    auto paths = currentSelection();
+    const auto& paths = currentSelection();
     if(!paths.count())
         return;
     if(settings->confirmTrash()) {
@@ -420,12 +424,13 @@ void Core::openFromClipboard() {
     auto mimeData = cb->mimeData();
     if(!mimeData)
         return;
+#ifdef QT_DEBUG
     qDebug() << "=====================================";
     qDebug() << "hasUrls:" << mimeData->hasUrls();
     qDebug() << "hasImage:" << mimeData->hasImage();
     qDebug() << "hasText:" << mimeData->hasText();
-
     qDebug() << "TEXT:" << cb->text();
+#endif
 
     if(mimeData->hasUrls()) {
         auto url = mimeData->urls().first();
@@ -441,8 +446,7 @@ void Core::openFromClipboard() {
         auto image = cb->image();
         if(image.isNull())
             return;
-        QSettings qsettings;
-        QString lastPasteDir = qsettings.value("clipboard/lastPasteSaveDir", "").toString();
+        QString lastPasteDir = appSettings.value("clipboard/lastPasteSaveDir", "").toString();
         QString destPath;
         if (!lastPasteDir.isEmpty() && QDir(lastPasteDir).exists())
             destPath = lastPasteDir + "/";
@@ -458,9 +462,9 @@ void Core::openFromClipboard() {
         QFileInfo destFi(destPath);
         if(!destFi.suffix().isEmpty()) {
             lastClipboardSaveFormat = destFi.suffix().toLower();
-            QSettings().setValue("clipboard/saveFormat", lastClipboardSaveFormat);
+            appSettings.setValue("clipboard/saveFormat", lastClipboardSaveFormat);
         }
-        qsettings.setValue("clipboard/lastPasteSaveDir", QFileInfo(destPath).absolutePath());
+        appSettings.setValue("clipboard/lastPasteSaveDir", QFileInfo(destPath).absolutePath());
 
 
         QString tmpPath = destPath + "_" + QString(QCryptographicHash::hash(destPath.toUtf8(), QCryptographicHash::Md5).toHex());
@@ -509,11 +513,9 @@ void Core::onDropIn(const QMimeData *mimeData, QObject* source) {
     if(source == this)
         return;
     if(mimeData->hasUrls()) {
-        QStringList pathList;
-        QList<QUrl> urlList = mimeData->urls();
-        for(int i = 0; i < urlList.size(); ++i)
-            pathList.append(urlList.at(i).toLocalFile());
-        loadPath(pathList.first());
+        const QList<QUrl> urlList = mimeData->urls();
+        if(!urlList.isEmpty())
+            loadPath(urlList.first().toLocalFile());
     }
 }
 
@@ -570,13 +572,11 @@ QMimeData* Core::getMimeDataForImage(const std::shared_ptr<Image>& img,
                 return mimeData;
 
             // 通过 cacheKey 判断图像内容是否改变
-            using CacheMap = QHash<QString, qint64>;  // 原图路径 -> 上次保存时的cacheKey
-            static CacheMap cacheKeys;
             const qint64 currentKey = image->cacheKey();
 
             bool needSave = false;
-            auto it = cacheKeys.find(img->filePath());
-            if (it == cacheKeys.end() || it.value() != currentKey) {
+            auto it = editedImageCacheKeys.find(img->filePath());
+            if (it == editedImageCacheKeys.end() || it.value() != currentKey) {
                 needSave = true;
             } else {
                 // cacheKey 匹配，再检查文件是否完好（防止外部误删）
@@ -588,7 +588,7 @@ QMimeData* Core::getMimeDataForImage(const std::shared_ptr<Image>& img,
             if (needSave) {
                 int quality = (target == TARGET_DROP) ? 80 : 30;
                 image->save(tmpPath, nullptr, quality);
-                cacheKeys[img->filePath()] = currentKey;
+                editedImageCacheKeys[img->filePath()] = currentKey;
             }
 
             path = tmpPath;
@@ -634,7 +634,7 @@ FileOpResult Core::removeFile(const QString& filePath, bool trash) {
     std::shared_ptr<Image> img;
     if(state.currentFilePath == filePath) {
         img = model->getImage(filePath);
-        if(img->type() == ANIMATED || img->type() == VIDEO) {
+        if(img && (img->type() == ANIMATED || img->type() == VIDEO)) {
             mw->closeImage();
             reopen = true;
         }
@@ -647,20 +647,23 @@ FileOpResult Core::removeFile(const QString& filePath, bool trash) {
 }
 
 void Core::onFileRemoved(const QString& filePath, int index) {
+    editedImageCacheKeys.remove(filePath);
     if(model->isEmpty()) {
         mw->closeImage();
         state.hasActiveImage = false;
         state.currentFilePath = "";
     }
     if(state.currentFilePath == filePath) {
-        if(!loadFileIndex(index, true, settings->usePreloader()))
+        const bool preload = settings->usePreloader();
+        if(!loadFileIndex(index, true, preload))
             if(index > 0)
-                loadFileIndex(index - 1, true, settings->usePreloader());
+                loadFileIndex(index - 1, true, preload);
     }
     updateInfoString();
 }
 
 void Core::onFileRenamed(const QString& fromPath, int /*indexFrom*/, const QString& /*toPath*/, int indexTo) {
+    editedImageCacheKeys.remove(fromPath);
     if(state.currentFilePath == fromPath) {
         loadFileIndex(indexTo, true, settings->usePreloader());
     }
@@ -697,21 +700,22 @@ void Core::showOpenDialog() {
 void Core::showInDirectory() {
     if(!model)
         return;
-    if(selectedPath().isEmpty()) {
+    const QString& path = selectedPath();
+    if(path.isEmpty()) {
         QDesktopServices::openUrl(QUrl::fromLocalFile(model->directoryPath()));
         return;
     }
 #if defined(__linux__) || defined(__FreeBSD__)
     QString fm = ScriptManager::runCommand("xdg-mime query default inode/directory");
     if(fm.contains("dolphin"))
-        ScriptManager::runCommandDetached("dolphin --select " + selectedPath());
+        ScriptManager::runCommandDetached("dolphin --select " + path);
     else if(fm.contains("nautilus"))
-        ScriptManager::runCommandDetached("nautilus --select " + selectedPath());
+        ScriptManager::runCommandDetached("nautilus --select " + path);
     else
         QDesktopServices::openUrl(QUrl::fromLocalFile(model->directoryPath()));
 #elif __WIN32
     QStringList args;
-    args << "/select," << QDir::toNativeSeparators(selectedPath());
+    args << "/select," << QDir::toNativeSeparators(path);
     QProcess::startDetached("explorer", args);
 #elif __APPLE__
     QStringList args;
@@ -720,7 +724,7 @@ void Core::showInDirectory() {
     args << "-e";
     args << "activate";
     args << "-e";
-    args << "select POSIX file \""+selectedPath()+"\"";
+    args << "select POSIX file \""+path+"\"";
     args << "-e";
     args << "end tell";
     QProcess::startDetached("osascript", args);
@@ -998,22 +1002,24 @@ void Core::discardEdits() {
     if(model->isEmpty())
         return;
 
-    std::shared_ptr<Image> img = model->getImage(selectedPath());
+    const QString& filePath = selectedPath();
+    std::shared_ptr<Image> img = model->getImage(filePath);
     if(img && img->type() == STATIC) {
         auto imgStatic = static_cast<ImageStatic *>(img.get());
         imgStatic->discardEditedImage();
-        model->updateImage(selectedPath(), img);
+        model->updateImage(filePath, img);
     }
     state.isEdited = false;
     mw->hideSaveOverlay();
 }
 
-QString Core::selectedPath() {
+const QString& Core::selectedPath() {
     return state.currentFilePath;
 }
 
-QList<QString> Core::currentSelection() {
-    return QList<QString>() << state.currentFilePath;
+const QList<QString>& Core::currentSelection() {
+    mCurrentSelection = { state.currentFilePath };
+    return mCurrentSelection;
 }
 
 //------------------------
@@ -1118,6 +1124,7 @@ void Core::onScalingFinished(const QPixmap& scaled, const ScalerRequest& req) {
 }
 
 void Core::reset() {
+    editedImageCacheKeys.clear();
     state.hasActiveImage = false;
     state.currentFilePath = "";
     model->setDirectory("");
@@ -1194,7 +1201,7 @@ bool Core::loadFileIndex(int index, bool async, bool preload) {
     if (!model)
         return false;
 
-    auto entry = model->fileEntryAt(index);
+    const auto& entry = model->fileEntryAt(index);
     const auto& path = entry.path;
     if (path.isEmpty())
         return false;
@@ -1390,7 +1397,7 @@ void Core::onModelItemReady(const std::shared_ptr<Image>& img, const QString &pa
 
         if(state.delayModel) {
             state.delayModel = false;
-            QTimer::singleShot(40, this, SLOT(modelDelayLoad()));
+            QTimer::singleShot(40, this, &Core::modelDelayLoad);
         }
     }
 }
@@ -1440,18 +1447,23 @@ void Core::guiSetImage(const std::shared_ptr<Image>& img) {
 void Core::updateInfoString() {
     QSize imageSize(0,0);
     qint64 fileSize = 0;
-    bool edited = false;
 
-    if(model->isLoaded(state.currentFilePath)) {
-        auto img = model->getImage(state.currentFilePath);
-        imageSize = img->size();
-        fileSize  = img->fileSize();
+    const QString& curPath = state.currentFilePath;
+    int index = model->indexOfFile(curPath);
+    const auto& entry = model->fileEntryAt(index);   // 越界时返回 defaultEntry
+
+    if(index >= 0 && model->isLoaded(curPath)) {
+        auto img = model->getImage(curPath);
+        if(img) {
+            imageSize = img->size();
+            fileSize  = img->fileSize();
+        }
     }
-    int index = model->indexOfFile(state.currentFilePath);
+
     mw->setCurrentInfo(index,
                        model->fileCount(),
-                       model->filePathAt(index),
-                       model->fileNameAt(index),
+                       entry.path,
+                       entry.name,
                        imageSize,
                        fileSize,
                        state.slideshowActive,
