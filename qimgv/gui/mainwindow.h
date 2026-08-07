@@ -16,7 +16,6 @@
 #include <QWheelEvent>
 #include <QEvent>
 #include <QPixmap>
-#include <QMovie>
 #include <QPointer>
 #include "gui/customwidgets/floatingwidgetcontainer.h"
 #include "gui/viewers/viewerwidget.h"
@@ -57,6 +56,8 @@ struct CurrentInfo {
     bool edited = false;
 };
 
+class ImageAnimated;
+
 // 优化：info bar 输出缓存，文本未变化时跳过 setInfo
 struct InfoBarCache {
     QString position;
@@ -77,7 +78,7 @@ public:
     bool isCropPanelActive();
     void onScalingFinished(const QPixmap& scaled);
     void showImage(const QPixmap& pixmap);
-    void showAnimation(const std::shared_ptr<QMovie>& movie);
+    void showAnimation(const std::shared_ptr<ImageAnimated>& image);
     void showVideo(QString&& file);
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     void setCurrentInfo(int fileIndex, int fileCount, const QString& filePath, const QString& fileName, QSize imageSize, qint64 fileSize, bool slideshow, bool shuffle, bool edited);

@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "sourcecontainers/imageanimated.h"
 #include <QImageWriter>
 #include <QMessageBox>
 #include <QMimeData>
@@ -220,10 +221,10 @@ void MW::showImage(const QPixmap& pixmap) {
     updateCropPanelData();
 }
 
-void MW::showAnimation(const std::shared_ptr<QMovie>& movie) {
+void MW::showAnimation(const std::shared_ptr<ImageAnimated>& image) {
     if(settings->autoResizeWindow())
-        preShowResize(movie->frameRect().size());
-    viewerWidget->showAnimation(movie);
+        preShowResize(image->size());
+    viewerWidget->showAnimation(image);
     updateCropPanelData();
 }
 

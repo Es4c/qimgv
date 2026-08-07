@@ -1,8 +1,8 @@
 #include "imageanimated.h"
 
 #include <QFile>
-#include <utility>
 #include <atomic>
+#include <utility>
 
 ImageAnimated::ImageAnimated(QString _path)
     : Image(std::move(_path))
@@ -27,33 +27,111 @@ void ImageAnimated::load() {
 }
 
 void ImageAnimated::loadMovie() {
-    if (movie && movie->fileName() == mPath && movie->isValid()) {
+    if (mReader)
         return;
-    }
 
-    movie = std::make_shared<QMovie>(mPath);
-    movie->setCacheMode(QMovie::CacheAll);
+    auto reader = std::make_unique<QImageReader>(mPath);
 
-    if (!movie->isValid()) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    reader->setAllocationLimit(settings->memoryAllocationLimit());
+#endif
+
+    if (!reader->canRead()) {
         mSize = QSize(0, 0);
         mFrameCount = 0;
         return;
     }
 
-    movie->jumpToFrame(0);
-    mSize = movie->frameRect().size();
-    mFrameCount = movie->frameCount();
+    mReader = std::move(reader);
+    mFrameCount = qMax(0, mReader->imageCount());
 
-    // 连接帧更新（GUI线程）
-    connect(movie.get(), &QMovie::frameChanged,
-            this, &ImageAnimated::onFrameChanged);
+    // 解码第一帧并发布（getImage() 消费者无需播放即可取到当前帧）
+    if (!jumpToFrame(0)) {
+        mSize = QSize(0, 0);
+        mFrameCount = 0;
+        return;
+    }
 
-    // 初始化第一帧
-    onFrameChanged(0);
+    mSize = mFrames.isEmpty() ? QSize(0, 0) : mFrames.at(0)->size();
 }
 
-int ImageAnimated::frameCount() {
+int ImageAnimated::frameCount() const {
     return mFrameCount;
+}
+
+int ImageAnimated::currentFrameNumber() const {
+    return mCurrentFrame;
+}
+
+int ImageAnimated::nextFrameDelay() const {
+    if (mCurrentFrame < 0 || mCurrentFrame >= mDelays.size())
+        return 0;
+    return mDelays.at(mCurrentFrame);
+}
+
+bool ImageAnimated::isValid() const {
+    return mReader && mFrameCount > 0;
+}
+
+bool ImageAnimated::jumpToFrame(int frameNumber) {
+    if (frameNumber < 0 || (mFrameCount > 0 && frameNumber >= mFrameCount))
+        return false;
+
+    if (frameNumber == mCurrentFrame && frameNumber < mFrames.size())
+        return true;
+
+    const auto frame = decodeFrame(frameNumber);
+    if (!frame)
+        return false;
+
+    mCurrentFrame = frameNumber;
+    mCurrentPixmapValid = false;
+
+    // 发布给 getImage() 消费者（打印/剪贴板等），仅一次 shared_ptr 原子交换
+    std::atomic_store_explicit(&cachedFrame, frame, std::memory_order_release);
+    return true;
+}
+
+bool ImageAnimated::jumpToNextFrame() {
+    return jumpToFrame(mCurrentFrame + 1);
+}
+
+std::shared_ptr<const QImage> ImageAnimated::decodeFrame(int index) {
+    if (index < 0)
+        return nullptr;
+    if (index < mFrames.size())
+        return mFrames.at(index);
+
+    // 顺序解码直到目标帧：动画格式连续调用 read() 即返回下一帧（GIF 即如此）
+    bool reachedEnd = false;
+    while (mFrames.size() <= index) {
+        QImage img = mReader->read();
+        if (img.isNull()) {
+            reachedEnd = true;
+            break;
+        }
+
+        mDelays.append(qMax(10, mReader->nextImageDelay()));
+        mFrames.append(std::make_shared<const QImage>(std::move(img)));
+    }
+
+    // 实际帧数少于 imageCount() 的扫描值时修正
+    if (reachedEnd && mFrames.size() < mFrameCount)
+        mFrameCount = mFrames.size();
+
+    return (index < mFrames.size()) ? mFrames.at(index) : nullptr;
+}
+
+QPixmap ImageAnimated::currentPixmap() const {
+    if (mCurrentFrame < 0 || mCurrentFrame >= mFrames.size())
+        return QPixmap();
+
+    // 同一帧只做一次 QImage→QPixmap，循环播放时后续直接共享
+    if (!mCurrentPixmapValid) {
+        mCurrentPixmap = QPixmap::fromImage(*mFrames.at(mCurrentFrame));
+        mCurrentPixmapValid = true;
+    }
+    return mCurrentPixmap;
 }
 
 bool ImageAnimated::save(QString destPath) {
@@ -77,39 +155,18 @@ bool ImageAnimated::save() {
 }
 
 void ImageAnimated::getPixmap(QPixmap& outPixmap) const {
-    // ✅ 优先使用缓存（避免 QMovie 调用）
-    auto frame = std::atomic_load_explicit(
-        &cachedFrame,
-        std::memory_order_acquire
-    );
-
-    if (frame && !frame->isNull()) {
-        outPixmap = QPixmap::fromImage(*frame);
+    // ✅ 优先使用当前帧的 QPixmap 缓存（同一帧只转换一次）
+    outPixmap = currentPixmap();
+    if (!outPixmap.isNull())
         return;
-    }
 
     // fallback（极少发生）
-    if (movie && movie->isValid()) {
-        outPixmap = movie->currentPixmap();
-        if (!outPixmap.isNull())
-            return;
-    }
-
     const QByteArray formatBytes = mDocInfo->format().toLatin1();
     outPixmap = QPixmap(mPath, formatBytes.constData());
 }
 
 std::shared_ptr<const QImage> ImageAnimated::getImage() const {
-    return std::atomic_load_explicit(
-        &cachedFrame,
-        std::memory_order_acquire
-    );
-}
-
-std::shared_ptr<QMovie> ImageAnimated::getMovie() {
-    if (!movie)
-        loadMovie();
-    return movie;
+    return std::atomic_load_explicit(&cachedFrame, std::memory_order_acquire);
 }
 
 int ImageAnimated::height() const {
@@ -122,22 +179,4 @@ int ImageAnimated::width() const {
 
 QSize ImageAnimated::size() const {
     return mSize;
-}
-
-void ImageAnimated::onFrameChanged(int /*frameNumber*/) {
-    // ⚠️ 保证在 GUI 线程调用（QMovie 限制）
-
-    QImage img = movie->currentImage();
-    if (img.isNull())
-        return;
-
-    // ✅ 避免默认构造 + 赋值
-    auto newFrame = std::make_shared<QImage>(std::move(img));
-
-    // ✅ lock-free 原子发布
-    std::atomic_store_explicit(
-        &cachedFrame,
-        std::const_pointer_cast<const QImage>(newFrame),
-        std::memory_order_release
-    );
 }

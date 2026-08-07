@@ -1433,8 +1433,9 @@ void Core::guiSetImage(const std::shared_ptr<Image>& img) {
         img->getPixmap(pixmap);
         mw->showImage(pixmap);
     } else if(type == ANIMATED) {
-        auto animated = dynamic_cast<ImageAnimated *>(img.get());
-        mw->showAnimation(animated->getMovie());
+        auto animated = std::dynamic_pointer_cast<ImageAnimated>(img);
+        if(animated)
+            mw->showAnimation(animated);
     } else if(type == VIDEO) {
         auto video = dynamic_cast<Video *>(img.get());
         showGui();

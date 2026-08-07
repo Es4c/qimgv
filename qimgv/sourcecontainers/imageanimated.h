@@ -1,7 +1,8 @@
 #pragma once
 
 #include "image.h"
-#include <QMovie>
+#include <QImageReader>
+#include <QList>
 #include <memory>
 
 class ImageAnimated final : public Image {
@@ -14,34 +15,40 @@ public:
 
     void getPixmap(QPixmap& outPixmap) const override;
     std::shared_ptr<const QImage> getImage() const override;
-    std::shared_ptr<QMovie> getMovie();
     int height() const override;
     int width() const override;
     QSize size() const override;
 
-    bool isEditable();
-    bool isEdited();
-
-    int frameCount();
+    int frameCount() const;
+    int currentFrameNumber() const;
+    int nextFrameDelay() const;
+    bool isValid() const;
+    bool jumpToFrame(int frameNumber);
+    bool jumpToNextFrame();
+    QPixmap currentPixmap() const;
 
 public slots:
     bool save() override;
     bool save(QString destPath) override;
 
-signals:
-    void frameChanged(QPixmap*);
-
 private:
     void load() override;
     void loadMovie();
+    std::shared_ptr<const QImage> decodeFrame(int index);
 
     QSize mSize;
     int mFrameCount = 0;
-    std::shared_ptr<QMovie> movie;
+    int mCurrentFrame = -1;
+    std::unique_ptr<QImageReader> mReader;
 
-    // ✅ 使用普通 shared_ptr + atomic free functions
+    // 帧缓存（等价 QMovie::CacheAll：按需顺序解码并全部缓存，循环播放时直接复用）
+    QList<std::shared_ptr<const QImage>> mFrames;
+    QList<int> mDelays;
+
+    // 当前帧 QPixmap 缓存：QMovie 每帧都丢弃重建，这里同一帧只转换一次
+    mutable QPixmap mCurrentPixmap;
+    mutable bool mCurrentPixmapValid = false;
+
+    // ✅ 使用普通 shared_ptr + atomic free functions（跨线程给 getImage() 消费者）
     std::shared_ptr<const QImage> cachedFrame;
-
-private slots:
-    void onFrameChanged(int frameNumber);
 };

@@ -10,6 +10,8 @@
 #include "gui/contextmenu.h"
 #include <QPointer>
 
+class ImageAnimated;
+
 enum CurrentWidget {
     IMAGEVIEWER,
     VIDEOPLAYER,
@@ -29,7 +31,7 @@ public:
     bool interactionEnabled();
 
     bool showImage(const QPixmap& pixmap);
-    bool showAnimation(const std::shared_ptr<QMovie>& movie);
+    bool showAnimation(const std::shared_ptr<ImageAnimated>& image);
     void onScalingFinished(const QPixmap& scaled);
     bool isDisplaying();
     bool lockZoomEnabled();

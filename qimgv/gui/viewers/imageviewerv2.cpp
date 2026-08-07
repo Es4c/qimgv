@@ -1,4 +1,5 @@
 #include "imageviewerv2.h"
+#include "sourcecontainers/imageanimated.h"
 #include <QApplication>
 #include <QPainter>
 #include <QProcess>
@@ -344,8 +345,8 @@ void ImageViewerV2::onAnimationTimer()
         }
     }
 
-    // currentPixmap() 本身即 QMovie 的一次全量转换；用移动语义传递，
-    // 避免 const 引用路径下 setDevicePixelRatio 触发一次整帧深拷贝
+    // ImageAnimated::currentPixmap() 返回当前帧缓存（同一帧只转换一次）；
+    // 用移动语义传递，避免 setDevicePixelRatio 触发一次整帧深拷贝
     QPixmap frame = movie->currentPixmap();
     if (frame.isNull())
         return;
@@ -435,7 +436,7 @@ void ImageViewerV2::updatePixmap(QPixmap&& newPixmap)
         pixmapItem.show();
 }
 
-void ImageViewerV2::showAnimation(const std::shared_ptr<QMovie>& animation)
+void ImageViewerV2::showAnimation(const std::shared_ptr<ImageAnimated>& animation)
 {
     if (!animation || !animation->isValid())
         return;

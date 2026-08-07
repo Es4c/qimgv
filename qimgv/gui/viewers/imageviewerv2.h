@@ -7,11 +7,12 @@
 #include <QWheelEvent>
 #include <QPropertyAnimation>
 #include <QScrollBar>
-#include <QMovie>
 #include <QColor>
 #include <QTimer>
 #include <memory>
 #include "settings.h"
+
+class ImageAnimated;
 
 enum MouseInteractionState {
     MOUSE_NONE,
@@ -85,7 +86,7 @@ public slots:
 
     void showImage(const QPixmap& pixmap);
     void showImage(QPixmap&& pixmap);
-    void showAnimation(const std::shared_ptr<QMovie>& animation);
+    void showAnimation(const std::shared_ptr<ImageAnimated>& animation);
     void setScaledPixmap(const QPixmap& newFrame);
     void setScaledPixmap(QPixmap&& newFrame);
     void enableDrags();
@@ -134,7 +135,7 @@ private:
     QGraphicsScene* scene;
     std::unique_ptr<QPixmap> pixmap;
     QPixmap pixmapScaled;
-    std::shared_ptr<QMovie> movie;
+    std::shared_ptr<ImageAnimated> movie;
     QGraphicsPixmapItem pixmapItem;
     QGraphicsPixmapItem pixmapItemScaled;
     QPixmap checkboard;

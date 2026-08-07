@@ -4,6 +4,7 @@
  */
 
 #include "viewerwidget.h"
+#include "sourcecontainers/imageanimated.h"
 
 ViewerWidget::ViewerWidget(QWidget *parent)
     : FloatingWidgetContainer(parent),
@@ -241,12 +242,12 @@ bool ViewerWidget::showImage(const QPixmap& pixmap) {
     return true;
 }
 
-bool ViewerWidget::showAnimation(const std::shared_ptr<QMovie>& movie) {
-    if(!movie)
+bool ViewerWidget::showAnimation(const std::shared_ptr<ImageAnimated>& image) {
+    if(!image)
         return false;
     stopPlayback();
     enableImageViewer();
-    imageViewer->showAnimation(movie);
+    imageViewer->showAnimation(image);
     hideCursorTimed(false);
     return true;
 }
