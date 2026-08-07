@@ -7,6 +7,9 @@
 #include <QDateTime>
 #include <QCollator>
 #include <QSet>
+#include <QTimer>
+#include <QVector>
+#include <QPair>
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
@@ -59,9 +62,6 @@ public:
     inline unsigned long dirCount() const { return dirEntryVec.size(); }
     inline unsigned long totalCount() const { return fileCount() + dirCount(); }
 
-    inline bool isSupportedFile(const QString &filePath) const;
-    
-    // 内联优化：移至头文件
     inline bool isEmpty() const { return fileEntryVec.empty(); }
 
     // 内联优化：contains 方法使用哈希表查找 O(1)
@@ -140,6 +140,17 @@ private:
     void updateDirIndexAfterInsert(const QString &path, int index);
     void updateDirIndexAfterRemove(const QString &path, int index);
 
+    // 无分配后缀匹配：全小写直接透明哈希查找，含大写时（罕见）才转小写
+    bool isSupportedSuffix(const QStringView &suffix) const;
+
+    // watcher 事件批量处理：去重 + 合并，避免每个事件单独 O(n) 索引重写
+    void flushPendingEvents();
+    void clearPendingEvents();
+    void processPendingRenames(const QVector<QPair<QString, QString>> &renames);
+    void processPendingRemovals(const QVector<QString> &removes);
+    void processPendingAdditions(const QVector<QString> &adds);
+    void processPendingModifications(const QVector<QString> &modifies);
+
 private:
     QSet<QString> mSupportedSuffixes;
     QCollator collator;
@@ -152,6 +163,13 @@ private:
     // 替代 static const QString emptyString - 线程安全且性能更好
     QString mEmptyString;
     bool mIgnoreWatcherEvents = false;
+
+    // 批量事件缓冲：0ms 单次定时器合并同一轮事件循环内的 watcher 事件
+    QTimer mEventBatchTimer;
+    QVector<QString> mPendingAdds;
+    QVector<QString> mPendingRemoves;
+    QVector<QPair<QString, QString>> mPendingRenames;
+    QVector<QString> mPendingModifies;
 
     void readSettings();
     void loadEntryList(const QString &directoryPath, bool recursive);

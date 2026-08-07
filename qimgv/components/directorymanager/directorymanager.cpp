@@ -1,5 +1,8 @@
 #include "directorymanager.h"
 #include <QDateTime>
+#include <QHash>
+#include <chrono>
+#include <iterator>
 
 namespace fs = std::filesystem;
 
@@ -11,6 +14,10 @@ DirectoryManager::DirectoryManager() {
     readSettings();
     setSortingMode(settings->sortingMode());
     connect(settings, &Settings::settingsChanged, this, &DirectoryManager::readSettings);
+    // 批量事件：0ms 单次定时器，合并同一轮事件循环内到达的 watcher 事件
+    mEventBatchTimer.setSingleShot(true);
+    mEventBatchTimer.setInterval(0);
+    connect(&mEventBatchTimer, &QTimer::timeout, this, &DirectoryManager::flushPendingEvents);
     // mEmptyString 默认构造即为空字符串，无需额外初始化
 }
 
@@ -98,6 +105,7 @@ void DirectoryManager::stopFileWatcher() {
     disconnect(watcher, &DirectoryWatcher::fileModified, this, &DirectoryManager::onFileModifiedExternal);
     disconnect(watcher, &DirectoryWatcher::fileRenamed, this, &DirectoryManager::onFileRenamedExternal);
     watcher->stopObserving();
+    clearPendingEvents();
 }
 
 void DirectoryManager::readSettings() {
@@ -168,15 +176,15 @@ bool DirectoryManager::setDirectory(const QString &dirPath) {
     if(dirPath.isEmpty()) {
         return false;
     }
+    // ⭐ 单次 status 同时完成存在性与类型判断，避免重复 stat
+    std::error_code ec;
     std::filesystem::path pathObj(dirPath.toStdWString());
-    if(!std::filesystem::exists(pathObj)) {
+    const auto st = std::filesystem::status(pathObj, ec);
+    if(ec || !std::filesystem::is_directory(st)) {
         return false;
     }
-    if(!std::filesystem::is_directory(pathObj)) {
-        return false;
-    }
-    QDir dir(dirPath);
-    if(!dir.isReadable()) {
+    QFileInfo dirInfo(dirPath);
+    if(!dirInfo.isReadable()) {
         return false;
     }
     mListSource = SOURCE_DIRECTORY;
@@ -192,11 +200,15 @@ bool DirectoryManager::setDirectoryRecursive(const QString &dirPath) {
     if(dirPath.isEmpty()) {
         return false;
     }
+    // ⭐ 单次 status 同时完成存在性与类型判断，避免重复 stat
+    std::error_code ec;
     std::filesystem::path pathObj(dirPath.toStdWString());
-    if(!std::filesystem::exists(pathObj)) {
+    const auto st = std::filesystem::status(pathObj, ec);
+    if(ec || !std::filesystem::is_directory(st)) {
         return false;
     }
-    if(!std::filesystem::is_directory(pathObj)) {
+    QFileInfo dirInfo(dirPath);
+    if(!dirInfo.isReadable()) {
         return false;
     }
     stopFileWatcher();
@@ -272,19 +284,25 @@ const FSEntry &DirectoryManager::fileEntryAt(int index) const {
 }
 
 QDateTime DirectoryManager::lastModified(const QString &filePath) const {
-    QFileInfo info;
-    if(containsFile(filePath))
-        info.setFile(filePath);
-    return info.lastModified();
+    // ⭐ 直接使用缓存的 modifyTime，避免对每个文件重复 stat
+    const int index = indexOfFile(filePath);
+    if(index < 0)
+        return {};
+    const auto &entry = fileEntryVec.at(index);
+    const auto sysTime = std::chrono::file_clock::to_sys(entry.modifyTime);
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        sysTime.time_since_epoch()).count();
+    return QDateTime::fromMSecsSinceEpoch(ms, Qt::LocalTime);
 }
 
-inline bool DirectoryManager::isSupportedFile(const QString &path) const {
-    if(!isFile(path))
-        return false;
-    const qsizetype dot = path.lastIndexOf(u'.');
-    if(dot < 0 || dot == path.size() - 1)
-        return false;
-    return mSupportedSuffixes.contains(path.mid(dot + 1).toLower());
+bool DirectoryManager::isSupportedSuffix(const QStringView &suffix) const {
+    // ⭐ 快速路径：全小写后缀直接透明哈希查找，零分配；
+    // 含大写字符（罕见）时才 toLower 分配一次
+    for (QChar c : suffix) {
+        if (c.isUpper())
+            return mSupportedSuffixes.contains(suffix.toLower());
+    }
+    return mSupportedSuffixes.contains(suffix);
 }
 
 bool DirectoryManager::isFile(const QString &path) const {
@@ -311,9 +329,17 @@ void DirectoryManager::loadEntryList(const QString &directoryPath, bool recursiv
     // 重置增量排序标志，确保 directory_iterator 无序结果被正确排序
     mFilesSorted = false;
     mDirsSorted = false;
-    // 预分配容量，减少内存重分配
-    fileEntryVec.reserve(1000);
-    dirEntryVec.reserve(100);
+    // 清理积压的 watcher 事件，避免旧目录事件串入新列表
+    clearPendingEvents();
+    // 预分配容量：非递归模式先纯计数（不触发 stat）再精确预留，
+    // 避免小目录无谓的大块预分配、大目录反复扩容；递归模式交由 vector 自增长
+    if(!recursive) {
+        std::error_code ec;
+        fs::directory_iterator it(std::filesystem::path(directoryPath.toStdWString()),
+                                  fs::directory_options::skip_permission_denied, ec);
+        if(!ec)
+            fileEntryVec.reserve(static_cast<size_t>(std::distance(it, fs::directory_iterator())));
+    }
 
     if(recursive) {
         addEntriesFromDirectoryRecursive(fileEntryVec, directoryPath);
@@ -346,7 +372,7 @@ void DirectoryManager::addEntriesFromDirectory(std::vector<FSEntry> &entryVec, c
         } else if (!ec) {
             const qsizetype dot = name.lastIndexOf(u'.');
             const bool supported = (dot > 0 && dot < name.size() - 1)
-                                   && mSupportedSuffixes.contains(name.mid(dot + 1).toLower());
+                                   && isSupportedSuffix(QStringView(name).mid(dot + 1));
             if (supported) {
                 FSEntry newEntry;
                 newEntry.name = name;
@@ -384,7 +410,7 @@ void DirectoryManager::addEntriesFromDirectoryRecursive(std::vector<FSEntry> &en
 
         const qsizetype dot = name.lastIndexOf(u'.');
         const bool supported = (dot > 0 && dot < name.size() - 1)
-                               && mSupportedSuffixes.contains(name.mid(dot + 1).toLower());
+                               && isSupportedSuffix(QStringView(name).mid(dot + 1));
 
         if (!entry.is_directory(ec) && !ec && supported) {
             FSEntry newEntry;
@@ -469,7 +495,7 @@ bool DirectoryManager::insertFileEntry(const QString &filePath) {
     const qsizetype dot = filePath.lastIndexOf(u'.');
     if(dot < 0 || dot == filePath.size() - 1)
         return false;
-    if(!mSupportedSuffixes.contains(filePath.mid(dot + 1).toLower()))
+    if(!isSupportedSuffix(QStringView(filePath).mid(dot + 1)))
         return false;
 
     return forceInsertFileEntry(filePath, stdEntry);
@@ -535,7 +561,16 @@ void DirectoryManager::renameFileEntry(const FilePath& oldFilePath, const FileNa
             insertFileEntry(newFilePath);
         return;
     }
-    if(!isSupportedFile(newFilePath)) {
+    // ⭐ 复用一次 directory_entry 完成类型判断与元数据获取，避免重复 stat
+    std::error_code ec;
+    std::filesystem::directory_entry stdEntry(std::filesystem::path(newFilePath.toStdWString()), ec);
+    if(ec || !stdEntry.is_regular_file(ec) || ec) {
+        removeFileEntry(oldFilePath.value);
+        return;
+    }
+    const qsizetype dot = newFilePath.lastIndexOf(u'.');
+    if(dot < 0 || dot == newFilePath.size() - 1
+       || !isSupportedSuffix(QStringView(newFilePath).mid(dot + 1))) {
         removeFileEntry(oldFilePath.value);
         return;
     }
@@ -561,9 +596,7 @@ void DirectoryManager::renameFileEntry(const FilePath& oldFilePath, const FileNa
     // 删除旧位置
     fileEntryVec.erase(fileEntryVec.begin() + oldIndex);
 
-    // 插入新条目
-    std::filesystem::path pathObj(newFilePath.toStdWString());
-    std::filesystem::directory_entry stdEntry(pathObj);
+    // 插入新条目（复用上面的 stdEntry，无额外 stat）
     FSEntry newEntry(FilePath(newFilePath), FileName(newFileName), stdEntry.file_size(), stdEntry.last_write_time(), stdEntry.is_directory());
 
     auto cmpFn = compareFunction();
@@ -670,60 +703,264 @@ void DirectoryManager::onFileRemovedExternal(const QString &fileName) {
     if(mIgnoreWatcherEvents)
         return;
 
-    const QString fullPath = QDir(watcher->watchPath()).filePath(fileName);
-
-    // ⭐ 两边都尝试（无需判断类型）
-    removeFileEntry(fullPath);
-    removeDirEntry(fullPath);
+    mPendingRemoves.append(QDir(watcher->watchPath()).filePath(fileName));
+    mEventBatchTimer.start();
 }
 
 void DirectoryManager::onFileAddedExternal(const QString &fileName) {
     if(mIgnoreWatcherEvents)
         return;
 
-    const QString fullPath = QDir(watcher->watchPath()).filePath(fileName);
-
-    // ⭐ 优先按 file 处理（更常见），失败再当 dir
-    if (!insertFileEntry(fullPath)) {
-        insertDirEntry(fullPath);
-    }
+    mPendingAdds.append(QDir(watcher->watchPath()).filePath(fileName));
+    mEventBatchTimer.start();
 }
 
 void DirectoryManager::onFileRenamedExternal(const QString &oldName, const QString &newName) {
     if(mIgnoreWatcherEvents)
         return;
 
-    const QString base = watcher->watchPath();
-    const QString oldPath = QDir(base).filePath(oldName);
-    const QString newPath = QDir(base).filePath(newName);
-
-    // ⭐ 优先用已有索引判断（避免文件系统时序问题）
-    if (containsDir(oldPath)) {
-        renameDirEntry(DirPath(oldPath), DirName(newName));
-        return;
-    }
-
-    if (containsFile(oldPath)) {
-        renameFileEntry(FilePath(oldPath), FileName(newName));
-        return;
-    }
-
-    // ⭐ fallback（极少情况：例如 watcher 丢事件 / 初始不同步）
-    if (isDir(newPath)) {
-        renameDirEntry(DirPath(oldPath), DirName(newName));
-    } else {
-        renameFileEntry(FilePath(oldPath), FileName(newName));
-    }
+    mPendingRenames.append(QPair<QString, QString>(QDir(watcher->watchPath()).filePath(oldName), newName));
+    mEventBatchTimer.start();
 }
 
 void DirectoryManager::onFileModifiedExternal(const QString &fileName) {
     if(mIgnoreWatcherEvents)
         return;
 
-    const QString fullPath = QDir(watcher->watchPath()).filePath(fileName);
+    mPendingModifies.append(QDir(watcher->watchPath()).filePath(fileName));
+    mEventBatchTimer.start();
+}
 
-    // ⭐ 只在已存在时更新，避免无意义 filesystem 调用
-    if (containsFile(fullPath)) {
-        updateFileEntry(fullPath);
+// ==================== 批量事件处理 ====================
+
+void DirectoryManager::clearPendingEvents() {
+    mEventBatchTimer.stop();
+    mPendingAdds.clear();
+    mPendingRemoves.clear();
+    mPendingRenames.clear();
+    mPendingModifies.clear();
+}
+
+void DirectoryManager::flushPendingEvents() {
+    if(mIgnoreWatcherEvents) {
+        clearPendingEvents();
+        return;
+    }
+
+    // 快照并立即清空，处理期间新到达的事件进入下一批
+    QVector<QString> adds = std::move(mPendingAdds);
+    QVector<QString> removes = std::move(mPendingRemoves);
+    QVector<QPair<QString, QString>> renames = std::move(mPendingRenames);
+    QVector<QString> modifies = std::move(mPendingModifies);
+    mPendingAdds.clear();
+    mPendingRemoves.clear();
+    mPendingRenames.clear();
+    mPendingModifies.clear();
+
+    // ⭐ 同一路径只保留最后一次操作（add/remove 相互抵消由最终结果决定）
+    {
+        // true=add, false=remove；后面的 insert 覆盖前面的（last-op-wins）
+        QHash<QString, bool> isAdd;
+        for(const auto &p : adds) isAdd.insert(p, true);
+        for(const auto &p : removes) isAdd.insert(p, false);
+        adds.clear();
+        removes.clear();
+        for(auto it = isAdd.constBegin(); it != isAdd.constEnd(); ++it) {
+            if(it.value()) adds.append(it.key());
+            else removes.append(it.key());
+        }
+    }
+
+    // 处理顺序：重命名 → 删除 → 新增 → 修改
+    // （重命名需要旧条目仍在；同一路径的 add/remove 已由去重后的最终结果决定）
+    processPendingRenames(renames);
+    processPendingRemovals(removes);
+    processPendingAdditions(adds);
+    processPendingModifications(modifies);
+}
+
+void DirectoryManager::processPendingRenames(const QVector<QPair<QString, QString>> &renames) {
+    if(renames.isEmpty() || !watcher)
+        return;
+
+    const QString base = watcher->watchPath();
+    for(const auto &r : renames) {
+        const QString &oldPath = r.first;
+        const QString &newName = r.second;
+
+        // ⭐ 优先用已有索引判断（避免文件系统时序问题）
+        if(containsDir(oldPath)) {
+            renameDirEntry(DirPath(oldPath), DirName(newName));
+            continue;
+        }
+        if(containsFile(oldPath)) {
+            renameFileEntry(FilePath(oldPath), FileName(newName));
+            continue;
+        }
+
+        // ⭐ fallback（极少情况：例如 watcher 丢事件 / 初始不同步）
+        const QString newPath = QDir(base).filePath(newName);
+        if(isDir(newPath)) {
+            renameDirEntry(DirPath(oldPath), DirName(newName));
+        } else {
+            renameFileEntry(FilePath(oldPath), FileName(newName));
+        }
+    }
+}
+
+void DirectoryManager::processPendingRemovals(const QVector<QString> &removes) {
+    if(removes.isEmpty())
+        return;
+
+    // 去重
+    QVector<QString> paths;
+    {
+        QSet<QString> seen;
+        paths.reserve(removes.size());
+        for(const auto &p : removes) {
+            if(!seen.contains(p)) {
+                seen.insert(p);
+                paths.append(p);
+            }
+        }
+    }
+
+    // 目录删除：批量快照索引 → 一次性擦除 → 单次重建 → 从高到低 emit
+    {
+        QVector<QPair<QString, int>> toRemove;
+        for(const auto &p : paths)
+            if(containsDir(p))
+                toRemove.append(QPair<QString, int>(p, indexOfDir(p)));
+        if(!toRemove.isEmpty()) {
+            QSet<QString> removalSet;
+            for(const auto &r : toRemove) removalSet.insert(r.first);
+            std::vector<FSEntry> survivors;
+            survivors.reserve(dirEntryVec.size() - toRemove.size());
+            for(auto &e : dirEntryVec)
+                if(!removalSet.contains(e.path))
+                    survivors.push_back(std::move(e));
+            dirEntryVec = std::move(survivors);
+            rebuildDirIndexMap();
+            // 从高到低 emit，保证视图连续删除时索引始终有效
+            std::sort(toRemove.begin(), toRemove.end(),
+                      [](const QPair<QString, int> &a, const QPair<QString, int> &b) {
+                          return a.second > b.second;
+                      });
+            for(const auto &r : toRemove)
+                emit dirRemoved(r.first, r.second);
+        }
+    }
+
+    // 文件删除：同理（此时 dirCount 已更新，视图索引按当前目录数计算）
+    {
+        QVector<QPair<QString, int>> toRemove;
+        for(const auto &p : paths)
+            if(containsFile(p))
+                toRemove.append(QPair<QString, int>(p, indexOfFile(p)));
+        if(!toRemove.isEmpty()) {
+            QSet<QString> removalSet;
+            for(const auto &r : toRemove) removalSet.insert(r.first);
+            std::vector<FSEntry> survivors;
+            survivors.reserve(fileEntryVec.size() - toRemove.size());
+            for(auto &e : fileEntryVec)
+                if(!removalSet.contains(e.path))
+                    survivors.push_back(std::move(e));
+            fileEntryVec = std::move(survivors);
+            rebuildFileIndexMap();
+            // 从高到低 emit，保证视图连续删除时索引始终有效
+            std::sort(toRemove.begin(), toRemove.end(),
+                      [](const QPair<QString, int> &a, const QPair<QString, int> &b) {
+                          return a.second > b.second;
+                      });
+            for(const auto &r : toRemove)
+                emit fileRemoved(r.first, r.second);
+        }
+    }
+}
+
+void DirectoryManager::processPendingAdditions(const QVector<QString> &adds) {
+    if(adds.isEmpty())
+        return;
+
+    // 去重并过滤已存在条目
+    QVector<QString> paths;
+    {
+        QSet<QString> seen;
+        paths.reserve(adds.size());
+        for(const auto &p : adds) {
+            if(seen.contains(p)) continue;
+            seen.insert(p);
+            if(containsFile(p) || containsDir(p)) continue;
+            paths.append(p);
+        }
+    }
+
+    // 一次 directory_entry 完成类型判断与元数据获取，避免重复 stat
+    std::vector<FSEntry> newFiles;
+    std::vector<FSEntry> newDirs;
+    for(const auto &p : paths) {
+        std::error_code ec;
+        std::filesystem::directory_entry stdEntry(std::filesystem::path(p.toStdWString()), ec);
+        if(ec) continue;
+        if(stdEntry.is_directory(ec) && !ec) {
+            FSEntry e;
+            e.name = QString::fromStdWString(stdEntry.path().filename().wstring());
+            e.path = p;
+            e.isDirectory = true;
+            newDirs.push_back(std::move(e));
+        } else if(!ec) {
+            const qsizetype dot = p.lastIndexOf(u'.');
+            if(dot <= 0 || dot == p.size() - 1) continue;
+            if(!isSupportedSuffix(QStringView(p).mid(dot + 1))) continue;
+            FSEntry e;
+            e.name = QString::fromStdWString(stdEntry.path().filename().wstring());
+            e.path = p;
+            e.isDirectory = false;
+            e.size = stdEntry.file_size(ec);
+            if(ec) continue;
+            e.modifyTime = stdEntry.last_write_time(ec);
+            if(ec) continue;
+            newFiles.push_back(std::move(e));
+        }
+    }
+
+    // 文件：批量追加 → 单次排序 → 单次重建 → emit
+    if(!newFiles.empty()) {
+        QVector<QString> addedPaths;
+        addedPaths.reserve(static_cast<qsizetype>(newFiles.size()));
+        for(const auto &e : newFiles) addedPaths.append(e.path);
+        fileEntryVec.insert(fileEntryVec.end(),
+                            std::make_move_iterator(newFiles.begin()),
+                            std::make_move_iterator(newFiles.end()));
+        mFilesSorted = false;
+        sortFileEntryListsIncremental();
+        rebuildFileIndexMap();
+        for(const auto &p : addedPaths) emit fileAdded(p);
+    }
+    if(!newDirs.empty()) {
+        QVector<QString> addedPaths;
+        addedPaths.reserve(static_cast<qsizetype>(newDirs.size()));
+        for(const auto &e : newDirs) addedPaths.append(e.path);
+        dirEntryVec.insert(dirEntryVec.end(),
+                           std::make_move_iterator(newDirs.begin()),
+                           std::make_move_iterator(newDirs.end()));
+        mDirsSorted = false;
+        sortDirEntryListsIncremental();
+        rebuildDirIndexMap();
+        for(const auto &p : addedPaths) emit dirAdded(p);
+    }
+}
+
+void DirectoryManager::processPendingModifications(const QVector<QString> &modifies) {
+    if(modifies.isEmpty())
+        return;
+
+    QSet<QString> seen;
+    for(const auto &p : modifies) {
+        if(seen.contains(p)) continue;
+        seen.insert(p);
+        // ⭐ 只在已存在时更新，避免无意义 filesystem 调用
+        if(containsFile(p))
+            updateFileEntry(p);
     }
 }
