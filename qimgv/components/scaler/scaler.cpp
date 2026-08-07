@@ -9,11 +9,6 @@ Scaler::Scaler(Cache *_cache, QObject *parent)
 {
     pool = new QThreadPool(this);
     pool->setMaxThreadCount(1);
-
-    // ✅ queued 保持线程安全，但不会复制图像数据
-    connect(this, &Scaler::acceptScalingResult,
-            this, &Scaler::slotForwardScaledResult,
-            Qt::QueuedConnection);
 }
 
 Scaler::~Scaler() {
@@ -22,11 +17,14 @@ Scaler::~Scaler() {
 
 void Scaler::requestScaled(const ScalerRequest &req) {
     bool needImmediateStart = false;
+    ScalerRequest stamped = req;
 
     {
         QMutexLocker locker(&mutex);
 
-        bufferedRequest = req;
+        // 🚀 每次请求递增代数并打戳，排队中任务据此自检是否已过期
+        stamped.setGeneration(mGeneration.fetch_add(1, std::memory_order_relaxed) + 1);
+        bufferedRequest = stamped;
 
         if (!running) {
             if (!buffered) {
@@ -41,19 +39,19 @@ void Scaler::requestScaled(const ScalerRequest &req) {
     }
 
     if (needImmediateStart) {
-        startRequest(req);
+        startRequest(stamped);
     }
 }
 
 void Scaler::startRequest(const ScalerRequest& req) {
-    auto *runnable = new ScalerRunnable(req);
+    auto *runnable = new ScalerRunnable(req, &mGeneration);
     runnable->setAutoDelete(true);
 
     connect(runnable, &ScalerRunnable::started,
             this, &Scaler::onTaskStart,
             Qt::DirectConnection);
 
-    // ✅ 关键：改为 shared pointer
+    // ✅ 关键：worker 线程直接产出 QPixmap，UI 线程零深拷贝
     connect(runnable, &ScalerRunnable::finished,
             this, &Scaler::onTaskFinish,
             Qt::DirectConnection);
@@ -73,12 +71,10 @@ void Scaler::onTaskStart(const ScalerRequest &req) {
     startedRequest = req;
 }
 
-void Scaler::onTaskFinish(QSharedPointer<QImage> scaled, ScalerRequest req) {
-    bool hasNextTask = false;
+void Scaler::onTaskFinish(QPixmap scaled, ScalerRequest req) {
+    bool deliverResult = false;
+    bool hasNext = false;
     ScalerRequest nextReq;
-
-    QSharedPointer<QImage> resultImage;
-    ScalerRequest resultReq;
 
     {
         QMutexLocker locker(&mutex);
@@ -86,27 +82,29 @@ void Scaler::onTaskFinish(QSharedPointer<QImage> scaled, ScalerRequest req) {
         running = false;
 
         if (buffered) {
-            hasNextTask = true;
-            nextReq = bufferedRequest;
+            if (!scaled.isNull() && bufferedRequest == startedRequest) {
+                // 🚀 缓冲请求与刚完成的完全相同 → 结果直接复用，跳过重复缩放
+                buffered = false;
+                startedRequest = ScalerRequest();
+                deliverResult = true;
+            } else {
+                // 取走缓冲中的最新请求。若启动前又被更新的请求覆盖，
+                // 旧的排队任务会在 run() 开头按代数自检取消，不会白算
+                nextReq = bufferedRequest;
+                buffered = false;
+                hasNext = true;
+            }
         } else {
-            resultImage = std::move(scaled);
-            resultReq = std::move(req);
+            deliverResult = !scaled.isNull();
             startedRequest = ScalerRequest();
         }
     }
 
-    if (hasNextTask) {
+    if (hasNext) {
         startRequest(nextReq);
     }
 
-    if (resultImage) {
-        emit acceptScalingResult(std::move(resultImage), std::move(resultReq));
+    if (deliverResult) {
+        emit scalingFinished(std::move(scaled), std::move(req));
     }
-}
-
-void Scaler::slotForwardScaledResult(const QSharedPointer<QImage>& image, ScalerRequest req) {
-    // ✅ 这里只发生一次真正的像素转换（不可避免）
-    QPixmap result = QPixmap::fromImage(*image);
-
-    emit scalingFinished(std::move(result), std::move(req));
 }

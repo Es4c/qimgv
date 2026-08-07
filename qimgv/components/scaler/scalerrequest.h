@@ -29,6 +29,10 @@ public:
     ScalerRequest& operator=(const ScalerRequest&) = default;
     ScalerRequest& operator=(ScalerRequest&&) noexcept = default;
 
+    // 🚀 代数：requestScaled 时递增打戳，用于排队中任务启动前的陈旧性自检
+    [[nodiscard]] quint64 generation() const noexcept { return m_generation; }
+    void setGeneration(quint64 g) noexcept { m_generation = g; }
+
     // 🚀 高频路径：全部返回引用
     [[nodiscard]] const std::shared_ptr<Image>& imageRef() const noexcept {
         return m_image;
@@ -46,7 +50,7 @@ public:
         return m_filter;
     }
 
-    // 🚀 指针比较避免字符串比较（非常关键）
+    // 🚀 指针比较避免字符串比较（非常关键）；代数不参与相等比较
     bool operator==(const ScalerRequest& other) const noexcept {
         return m_image.get() == other.m_image.get() &&
                m_size == other.m_size &&
@@ -62,6 +66,7 @@ private:
     QSize m_size;
     QString m_path;
     ScalingFilter m_filter;
+    quint64 m_generation = 0;
 };
 
 // Qt 元类型（仍然安全）

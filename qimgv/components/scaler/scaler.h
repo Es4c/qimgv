@@ -3,9 +3,8 @@
 #include <QObject>
 #include <QThreadPool>
 #include <QMutex>
-#include <QImage>
 #include <QPixmap>
-#include <QSharedPointer>
+#include <atomic>
 #include "components/cache/cache.h"
 #include "scalerrequest.h"
 #include "scalerrunnable.h"
@@ -17,11 +16,8 @@ public:
     ~Scaler() override;
 
 signals:
-    // ✅ 用 QSharedPointer 避免深拷贝
+    // ✅ QPixmap 由 worker 线程产出（隐式共享），经 queued 连接浅拷贝送达 UI 线程
     void scalingFinished(QPixmap result, ScalerRequest request);
-
-    // ✅ 内部传递也用 shared
-    void acceptScalingResult(QSharedPointer<QImage> image, ScalerRequest req);
 
 public slots:
     void requestScaled(const ScalerRequest &req);
@@ -29,10 +25,7 @@ public slots:
 private slots:
     void onTaskStart(const ScalerRequest &req);
 
-    // ✅ 接收 shared pointer
-    void onTaskFinish(QSharedPointer<QImage> scaled, ScalerRequest req);
-
-    void slotForwardScaledResult(const QSharedPointer<QImage>& image, ScalerRequest req);
+    void onTaskFinish(QPixmap scaled, ScalerRequest req);
 
 private:
     void startRequest(const ScalerRequest &req);
@@ -45,6 +38,9 @@ private:
 
     ScalerRequest bufferedRequest;
     ScalerRequest startedRequest;
+
+    // 🚀 请求代数计数：requestScaled 时递增打戳，排队中任务据此自检是否已过期
+    std::atomic<quint64> mGeneration{0};
 
     mutable QMutex mutex;
 };
