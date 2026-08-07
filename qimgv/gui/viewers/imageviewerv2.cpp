@@ -1188,24 +1188,20 @@ void ImageViewerV2::adjustViewport()
 
     QPointF centerTarget = vport.center();
 
-    // 居中（与 centerIfNecessary 判断条件一致）
+    // 居中优先（与 centerIfNecessary 判断条件一致）
     if (qRound(img.width()) <= viewportW) {
         centerTarget.setX(img.center().x());
-    }
-
-    if (qRound(img.height()) <= viewportH) {
-        centerTarget.setY(img.center().y());
-    }
-
-    // 贴边（与 snapToEdges 判断条件一致）
-    if (img.width() > vport.width()) {
+    } else if (img.width() > vport.width()) {
+        // 贴边（与 snapToEdges 判断条件一致）
         if (img.left() > vport.left())
             centerTarget.rx() += img.left() - vport.left();
         else if (img.right() < vport.right())
             centerTarget.rx() += img.right() - vport.right();
     }
 
-    if (img.height() > vport.height()) {
+    if (qRound(img.height()) <= viewportH) {
+        centerTarget.setY(img.center().y());
+    } else if (img.height() > vport.height()) {
         if (img.top() > vport.top())
             centerTarget.ry() += img.top() - vport.top();
         else if (img.bottom() < vport.bottom())
