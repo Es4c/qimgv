@@ -1,48 +1,46 @@
 #include "loader.h"
-#include <QThread>
+#include "utils/imagefactory.h"
 #include <QMutableHashIterator>
 
 Loader::Loader() {
     pool = new QThreadPool(this);
     pool->setMaxThreadCount(2);
+    // 当前图片走独立单线程池：即使两个 preload 线程都被占用，优先级加载也能立即开始
+    priorityPool = new QThreadPool(this);
+    priorityPool->setMaxThreadCount(1);
 
     // 🚀 减少 QHash rehash
     tasks.reserve(32);
 }
 
 Loader::~Loader() {
-    // 1. 取消排队中的任务（tryTake 成功则 delete）
+    // 1. 取消排队中的任务（标记取消并移出 tasks，被线程池拾取后 run() 释放 self 自毁）
     clearTasks();
-    // 2. 等待运行中任务完成。此时 Loader 成员仍有效，
-    //    onLoadFinished 若被调用也能安全访问 tasks（主线程事件循环已退出，通常不会执行）
+    // 2. 等待运行中任务完成（结果事件已投递，其捕获的 self 引用维系对象存活）
     pool->waitForDone();
-    // 3. 手动释放剩余任务（onLoadFinished 因 queued 未处理而残留的）
-    //    先 disconnect 切断 queued 信号，防止事件循环意外恢复时回调已删除对象
-    for (auto *runnable : tasks) {
-        runnable->disconnect();
-        delete runnable;
-    }
+    priorityPool->waitForDone();
+    // 3. 释放哈希引用；残留事件在 ~QObject 时被丢弃，随之释放引用并销毁对象。
+    //    不能手动 delete（对象可能仍被待处理事件引用）。
     tasks.clear();
-    // pool 作为子对象随后析构，QThreadPool 析构会再次 waitForDone（已结束，立即返回）
+    // pool / priorityPool 作为子对象随后析构
 }
 
 void Loader::clearTasks() {
-    // 只取消"排队中"的任务，保留"运行中"的任务让其完成并进缓存
-    // 这样 preload 在正常速度翻页时能真正生效（结果进缓存），
-    // 同时快速翻页时排队中的过期 preload 仍会被取消，不浪费线程。
-    QMutableHashIterator<QString, LoaderRunnable*> it(tasks);
+    // 单遍 O(n)：只取消"排队中"（started==false）的任务，保留运行中的任务让其完成并进缓存。
+    // 排队中的任务标记 cancelled 并移出 tasks，被线程池拾取后 run() 直接自毁，
+    // 不再逐任务 tryTake（tryTake 每次扫描队列，任务多时为 O(n²)）。
+    QMutableHashIterator<QString, std::shared_ptr<LoaderRunnable>> it(tasks);
     
     while (it.hasNext()) {
         it.next();
-        LoaderRunnable *runnable = it.value();
+        LoaderRunnable *runnable = it.value().get();
 
-        // tryTake 仅对尚未启动的任务返回 true
-        if (pool->tryTake(runnable)) {
-            // 任务还在队列中，直接删除对象并从哈希表移除
-            delete runnable;
-            it.remove();
+        if (runnable->started()) {
+            // 运行中：保留，完成后结果仍会进缓存（preload 在正常翻页时真正生效）
+            continue;
         }
-        // 运行中的任务保留在 tasks 中，完成后 onLoadFinished 会收到信号并进缓存
+        runnable->markCancelled();
+        it.remove(); // 移出哈希，仅剩 self 引用；被拾取后 run() 释放并自毁
     }
 }
 
@@ -60,35 +58,29 @@ std::shared_ptr<Image> Loader::load(const QString &path) {
 
 void Loader::loadAsyncPriority(const QString &path) {
     clearTasks(); // 清理当前任务，优先加载新任务
-    doLoadAsync(path, 1);
+    doLoadAsync(priorityPool, path);
 }
 
 void Loader::loadAsync(const QString &path) {
-    doLoadAsync(path, 0);
+    doLoadAsync(pool, path);
 }
 
-void Loader::doLoadAsync(const QString &path, int priority) {
-    auto it = tasks.find(path);
-    if (it != tasks.end()) {
-        return; // 已在加载中
+void Loader::doLoadAsync(QThreadPool *targetPool, const QString &path) {
+    if (tasks.contains(path)) {
+        return; // 已在加载中（含运行中的 preload，其结果会进缓存）
     }
     
-    auto *runnable = new LoaderRunnable(path);
-    runnable->setAutoDelete(false); // 我们手动管理内存，以便在 clearTasks 时安全删除
-    
+    auto runnable = std::make_shared<LoaderRunnable>(this, path);
+    runnable->self = runnable; // 排队/运行期间维系对象存活
     tasks.insert(path, runnable);
-    connect(runnable, &LoaderRunnable::finished, this, &Loader::onLoadFinished);
-    
-    pool->start(runnable, priority);
+    targetPool->start(runnable.get());
 }
 
 void Loader::onLoadFinished(const std::shared_ptr<Image> &image, const QString &path) {
-    auto *task = tasks.take(path);
-    if (task) {
-        // 转发结果（运行中的 preload 任务完成后结果会进缓存）
-        if (!image) emit loadFailed(path);
-        else emit loadFinished(image, path);
-        task->deleteLater(); // 安全删除，避免跨线程 delete 竞态
+    if (!tasks.remove(path)) {
+        return; // 已被 clearTasks 取消并移出，忽略其结果
     }
-    // 任务不在 tasks 中：已被 clearTasks 通过 tryTake 取消并删除，无需处理
+    // 事件捕获的 self 引用在事件处理完后自动释放并销毁对象，无需 deleteLater
+    if (!image) emit loadFailed(path);
+    else emit loadFinished(image, path);
 }
