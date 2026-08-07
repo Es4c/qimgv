@@ -835,12 +835,17 @@ void DirectoryManager::processPendingRenames(const QVector<QPair<QString, QStrin
         }
 
         // ⭐ fallback：旧条目不在列表中（本批内"新建后随即重命名"，add 已被消费；
-        // 或 watcher 丢事件 / 初始不同步）→ 直接把新路径插入列表
+        // 或 watcher 丢事件 / 初始不同步）→ 直接把新路径插入列表；
+        // 目标已在列表中则改为刷新元数据（覆盖"temp 重命名覆盖已跟踪文件"的原子替换场景）
         const QString newPath = QDir(base).filePath(newName);
         if(isDir(newPath))
             insertDirEntry(newPath);
-        else if(isFile(newPath))
-            insertFileEntry(newPath);
+        else if(isFile(newPath)) {
+            if(containsFile(newPath))
+                updateFileEntry(newPath);
+            else
+                insertFileEntry(newPath);
+        }
     }
 }
 
