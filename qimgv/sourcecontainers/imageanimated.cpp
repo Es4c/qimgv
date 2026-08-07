@@ -119,7 +119,7 @@ std::shared_ptr<const QImage> ImageAnimated::decodeFrame(int index) {
 
     // 实际帧数少于 imageCount() 的扫描值时修正
     if (reachedEnd && mFrames.size() < mFrameCount)
-        mFrameCount = mFrames.size();
+        mFrameCount = static_cast<int>(mFrames.size());
 
     return (index < mFrames.size()) ? mFrames.at(index) : nullptr;
 }
