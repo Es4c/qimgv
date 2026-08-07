@@ -418,10 +418,12 @@ void ViewerWidget::mouseMoveEvent(QMouseEvent *event) {
         const QPoint pos = event->position().toPoint();
         const QRect area = videoControlsArea();
 
-        if(area.contains(pos))
-            videoControls->show();
-        else
+        if(area.contains(pos)) {
+            if(!videoControls->isVisible())
+                videoControls->show();
+        } else if(videoControls->isVisible()) {
             videoControls->hide();
+        }
     }
 
     event->ignore();
@@ -482,10 +484,15 @@ void ViewerWidget::hideCursor() {
 }
 
 QRect ViewerWidget::videoControlsArea() {
-    if(settings->panelEnabled() && settings->panelPosition() == PANEL_BOTTOM)
-        return QRect(0, 0, width(), 160);
-
-    return QRect(0, height() - 160, width(), 160);
+    // 缓存，避免每次鼠标移动都查询设置并构造 QRect
+    if(!mVideoControlsAreaValid) {
+        if(settings->panelEnabled() && settings->panelPosition() == PANEL_BOTTOM)
+            mVideoControlsArea = QRect(0, 0, width(), 160);
+        else
+            mVideoControlsArea = QRect(0, height() - 160, width(), 160);
+        mVideoControlsAreaValid = true;
+    }
+    return mVideoControlsArea;
 }
 
 // click zone input crutch
@@ -552,24 +559,28 @@ bool ViewerWidget::eventFilter(QObject *object, QEvent *event) {
         if(clickZoneOverlay->leftZone().contains(pos)) {
             clickZoneOverlay->setPressed(false);
             clickZoneOverlay->highlightLeft();
-            setCursor(Qt::PointingHandCursor);
+            if(cursor().shape() != Qt::PointingHandCursor)
+                setCursor(Qt::PointingHandCursor);
             return true;
         }
 
         if(clickZoneOverlay->rightZone().contains(pos)) {
             clickZoneOverlay->setPressed(false);
             clickZoneOverlay->highlightRight();
-            setCursor(Qt::PointingHandCursor);
+            if(cursor().shape() != Qt::PointingHandCursor)
+                setCursor(Qt::PointingHandCursor);
             return true;
         }
 
         clickZoneOverlay->disableHighlight();
-        setCursor(Qt::ArrowCursor);
+        if(cursor().shape() != Qt::ArrowCursor)
+            setCursor(Qt::ArrowCursor);
     }
 
     if(type == QEvent::Leave) {
         clickZoneOverlay->disableHighlight();
-        setCursor(Qt::ArrowCursor);
+        if(cursor().shape() != Qt::ArrowCursor)
+            setCursor(Qt::ArrowCursor);
     }
 
     return false;
@@ -606,6 +617,8 @@ void ViewerWidget::onFullscreenModeChanged(bool mode) {
 }
 
 void ViewerWidget::readSettings() {
+    // 面板相关设置可能变化，使 videoControlsArea 缓存失效
+    mVideoControlsAreaValid = false;
     videoControls->onVideoMuted(!settings->playVideoSounds());
     if(settings->clickableEdges()) {
         imageViewer->viewport()->installEventFilter(this);
@@ -660,4 +673,10 @@ void ViewerWidget::keyPressEvent(QKeyEvent *event) {
 void ViewerWidget::leaveEvent(QEvent *event) {
     QWidget::leaveEvent(event);
     videoControls->hide();
+}
+
+void ViewerWidget::resizeEvent(QResizeEvent *event) {
+    // 尺寸变化会影响 videoControlsArea 的宽度/高度
+    mVideoControlsAreaValid = false;
+    FloatingWidgetContainer::resizeEvent(event);
 }

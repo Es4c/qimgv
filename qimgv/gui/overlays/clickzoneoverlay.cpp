@@ -79,6 +79,9 @@ void ClickZoneOverlay::setPressed(bool mode) {
 }
 
 void ClickZoneOverlay::setHighlightedZone(ActiveHighlightZone zone) {
+    // 状态未变则跳过 update()，避免鼠标移动时无条件调度重绘
+    if (activeZone == zone)
+        return;
     activeZone = zone;
     update();
 }

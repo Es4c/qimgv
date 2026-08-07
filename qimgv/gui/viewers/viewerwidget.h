@@ -58,6 +58,8 @@ private:
     void disableVideoPlayer();
 
     QRect videoControlsArea();
+    QRect mVideoControlsArea;
+    bool mVideoControlsAreaValid = false;
 
     bool eventFilter(QObject *object, QEvent *event);
 
@@ -129,4 +131,5 @@ protected:
     void keyPressEvent(QKeyEvent *event);
     void leaveEvent(QEvent *event);
     bool focusNextPrevChild(bool mode);
+    void resizeEvent(QResizeEvent *event) override;
 };
