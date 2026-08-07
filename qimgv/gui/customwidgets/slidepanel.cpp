@@ -31,10 +31,6 @@ void SlidePanel::hide() {
     QWidget::hide();
 }
 
-void SlidePanel::hideAnimated() {
-    QWidget::hide();
-}
-
 bool SlidePanel::layoutManaged() {
     return mLayoutManaged;
 }

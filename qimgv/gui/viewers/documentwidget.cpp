@@ -59,8 +59,11 @@ void DocumentWidget::setPanelPinned(bool mode) {
             layout->removeWidget(mainPanel);
         mainPanel->setLayoutManaged(false);
     } else {    // pin
+        if(mPanelPinned)
+            return; // 已 pin，避免重复 insertWidget 触发无谓的 relayout
         layout->insertWidget(1, mainPanel);
-        switch(settings->panelPosition()) {
+        const PanelPosition pos = settings->panelPosition();
+        switch(pos) {
             case PANEL_TOP:
                 layout->setDirection(QBoxLayout::BottomToTop); break;
             case PANEL_BOTTOM:
@@ -81,12 +84,8 @@ bool DocumentWidget::panelPinned() {
 }
 
 void DocumentWidget::hideFloatingPanel() {
-    hideFloatingPanel(false);
-}
-
-void DocumentWidget::hideFloatingPanel(bool animated) {
     if(!mPanelPinned)
-        mainPanel->hideAnimated();
+        mainPanel->hide();
 }
 
 void DocumentWidget::setPanelEnabled(bool mode) {
@@ -113,15 +112,18 @@ void DocumentWidget::mouseMoveEvent(QMouseEvent *event) {
     event->ignore();
     if(mPanelPinned)
         return;
+    // ⭐ 热路径：每次鼠标移动都会触发，缓存一次 position/triggerRect
+    const QPoint pos = event->position().toPoint();
+    const QRect triggerRect = mainPanel->triggerRect();
     // ignore if we are doing something with the mouse (zoom / drag)
     if(event->buttons() != Qt::NoButton) {
-        if(mainPanel->triggerRect().contains(event->position().toPoint()))
+        if(triggerRect.contains(pos))
             avoidPanelFlag = true;
         return;
     }
     // show on hover event
-    if(mPanelEnabled && (mIsFullscreen|| !mPanelFullscreenOnly)) {
-        if(mainPanel->triggerRect().contains(event->position().toPoint()) && !avoidPanelFlag) {
+    if(mPanelEnabled && (mIsFullscreen || !mPanelFullscreenOnly)) {
+        if(triggerRect.contains(pos) && !avoidPanelFlag) {
             mainPanel->show();
         }
     }
@@ -132,11 +134,11 @@ void DocumentWidget::mouseMoveEvent(QMouseEvent *event) {
         // it still fcks up Fitts law as the buttons are not receiving hover on screen border
 
         // alright this also only works when in root window. sad.
-        if(!mainPanel->triggerRect().adjusted(-8,-8,8,8).contains(event->position().toPoint())) {
-            mainPanel->hideAnimated();
+        if(!triggerRect.adjusted(-8,-8,8,8).contains(pos)) {
+            mainPanel->hide();
         }
     }
-    if(!mainPanel->triggerRect().contains(event->position().toPoint()))
+    if(!triggerRect.contains(pos))
         avoidPanelFlag = false;
 }
 

@@ -1039,5 +1039,5 @@ void MW::paintEvent(QPaintEvent *event) {
 
 void MW::leaveEvent(QEvent *event) {
     QWidget::leaveEvent(event);
-    docWidget->hideFloatingPanel(true);
+    docWidget->hideFloatingPanel();
 }

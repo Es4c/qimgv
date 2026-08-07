@@ -27,7 +27,6 @@ public:
 
     void setPosition(PanelPosition);
     PanelPosition position();
-    void hideAnimated();
 
 public slots:
     void show();

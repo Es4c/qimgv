@@ -14,7 +14,6 @@ public:
     ViewerWidget *viewWidget();
     void setFocus();
     void hideFloatingPanel();
-    void hideFloatingPanel(bool animated);
     void setPanelEnabled(bool mode);
     bool panelEnabled();
     void setInteractionEnabled(bool mode);
