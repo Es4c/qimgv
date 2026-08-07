@@ -138,7 +138,7 @@ private:
     void updateDirIndexAfterInsert(const QString &path, int index);
     void updateDirIndexAfterRemove(const QString &path, int index);
 
-    // 无分配后缀匹配：全小写直接透明哈希查找，含大写时（罕见）才转小写
+    // 无分配后缀匹配：与已统一小写的集合元素做长度+大小写不敏感比较
     bool isSupportedSuffix(const QStringView &suffix) const;
 
     // watcher 事件批量处理：去重 + 合并，避免每个事件单独 O(n) 索引重写
@@ -147,7 +147,7 @@ private:
     void processPendingRenames(const QVector<QPair<QString, QString>> &renames);
     void processPendingRemovals(const QVector<QString> &removes);
     void processPendingAdditions(const QVector<QString> &adds);
-    void processPendingModifications(const QVector<QString> &modifies);
+    void processPendingModifications(const QSet<QString> &modifies);
 
 private:
     QSet<QString> mSupportedSuffixes;
@@ -163,11 +163,15 @@ private:
     bool mIgnoreWatcherEvents = false;
 
     // 批量事件缓冲：0ms 单次定时器合并同一轮事件循环内的 watcher 事件
+    // 单条有序队列保留真实到达顺序，供合并时 last-op-wins 与 rename 链判定
+    struct PendingEvent {
+        enum class Type : quint8 { Add, Remove, Modify, Rename };
+        Type type;
+        QString path;     // Rename 时为旧路径，其余为完整路径
+        QString newName;  // 仅 Rename 使用：新文件名
+    };
     QTimer mEventBatchTimer;
-    QVector<QString> mPendingAdds;
-    QVector<QString> mPendingRemoves;
-    QVector<QPair<QString, QString>> mPendingRenames;
-    QVector<QString> mPendingModifies;
+    QVector<PendingEvent> mPendingEvents;
 
     void readSettings();
     void loadEntryList(const QString &directoryPath, bool recursive);

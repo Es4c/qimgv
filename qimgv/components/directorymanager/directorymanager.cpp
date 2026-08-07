@@ -317,16 +317,9 @@ void DirectoryManager::loadEntryList(const QString &directoryPath, bool recursiv
     mDirsSorted = false;
     // 清理积压的 watcher 事件，避免旧目录事件串入新列表
     clearPendingEvents();
-    // 预分配容量：非递归模式先纯计数（不触发 stat）再精确预留，
-    // 避免小目录无谓的大块预分配、大目录反复扩容；递归模式交由 vector 自增长
-    if(!recursive) {
-        std::error_code ec;
-        fs::directory_iterator it(std::filesystem::path(directoryPath.toStdWString()),
-                                  fs::directory_options::skip_permission_denied, ec);
-        if(!ec)
-            fileEntryVec.reserve(static_cast<size_t>(std::distance(it, fs::directory_iterator())));
-    }
-
+    // 容量交由 vector 自增长：精确 reserve 需先完整遍历一遍目录，
+    // 其枚举开销大于省下的少量重分配（FSEntry 为 POD 类结构，扩容仅 memcpy），
+    // 故不再预分配——小目录零浪费，大目录指数扩容
     if(recursive) {
         addEntriesFromDirectoryRecursive(fileEntryVec, directoryPath);
     } else {
@@ -689,7 +682,10 @@ void DirectoryManager::onFileRemovedExternal(const QString &fileName) {
     if(mIgnoreWatcherEvents)
         return;
 
-    mPendingRemoves.append(QDir(watcher->watchPath()).filePath(fileName));
+    PendingEvent ev;
+    ev.type = PendingEvent::Type::Remove;
+    ev.path = QDir(watcher->watchPath()).filePath(fileName);
+    mPendingEvents.append(ev);
     mEventBatchTimer.start();
 }
 
@@ -697,7 +693,10 @@ void DirectoryManager::onFileAddedExternal(const QString &fileName) {
     if(mIgnoreWatcherEvents)
         return;
 
-    mPendingAdds.append(QDir(watcher->watchPath()).filePath(fileName));
+    PendingEvent ev;
+    ev.type = PendingEvent::Type::Add;
+    ev.path = QDir(watcher->watchPath()).filePath(fileName);
+    mPendingEvents.append(ev);
     mEventBatchTimer.start();
 }
 
@@ -705,7 +704,11 @@ void DirectoryManager::onFileRenamedExternal(const QString &oldName, const QStri
     if(mIgnoreWatcherEvents)
         return;
 
-    mPendingRenames.append(QPair<QString, QString>(QDir(watcher->watchPath()).filePath(oldName), newName));
+    PendingEvent ev;
+    ev.type = PendingEvent::Type::Rename;
+    ev.path = QDir(watcher->watchPath()).filePath(oldName);
+    ev.newName = newName;
+    mPendingEvents.append(ev);
     mEventBatchTimer.start();
 }
 
@@ -713,7 +716,10 @@ void DirectoryManager::onFileModifiedExternal(const QString &fileName) {
     if(mIgnoreWatcherEvents)
         return;
 
-    mPendingModifies.append(QDir(watcher->watchPath()).filePath(fileName));
+    PendingEvent ev;
+    ev.type = PendingEvent::Type::Modify;
+    ev.path = QDir(watcher->watchPath()).filePath(fileName);
+    mPendingEvents.append(ev);
     mEventBatchTimer.start();
 }
 
@@ -721,10 +727,7 @@ void DirectoryManager::onFileModifiedExternal(const QString &fileName) {
 
 void DirectoryManager::clearPendingEvents() {
     mEventBatchTimer.stop();
-    mPendingAdds.clear();
-    mPendingRemoves.clear();
-    mPendingRenames.clear();
-    mPendingModifies.clear();
+    mPendingEvents.clear();
 }
 
 void DirectoryManager::flushPendingEvents() {
@@ -734,35 +737,82 @@ void DirectoryManager::flushPendingEvents() {
     }
 
     // 快照并立即清空，处理期间新到达的事件进入下一批
-    QVector<QString> adds = std::move(mPendingAdds);
-    QVector<QString> removes = std::move(mPendingRemoves);
-    QVector<QPair<QString, QString>> renames = std::move(mPendingRenames);
-    QVector<QString> modifies = std::move(mPendingModifies);
-    mPendingAdds.clear();
-    mPendingRemoves.clear();
-    mPendingRenames.clear();
-    mPendingModifies.clear();
+    QVector<PendingEvent> events = std::move(mPendingEvents);
+    mPendingEvents.clear();
 
-    // ⭐ 同一路径只保留最后一次操作（add/remove 相互抵消由最终结果决定）
+    // ---- 按真实到达顺序合并 ----
+    // add/remove：同一路径由最后一次到达的 op 决定（跨队列时序不再丢失）
+    QHash<QString, bool> finalOp;          // true=add, false=remove
+    // rename：同旧路径只保留最后一次；renameSeq 记录其序号用于按序输出
+    QHash<QString, QString> renameFinal;
+    QHash<QString, int> renameSeq;
+    QHash<QString, int> firstRenameSeq;    // 旧路径首次被 rename 的序号
+    QHash<QString, int> addSeq;            // add 事件序号（判定"新建后随即重命名"）
+    QSet<QString> modifySet;
+    int seq = 0;
+    for(const auto &ev : events) {
+        switch(ev.type) {
+        case PendingEvent::Type::Add:
+            addSeq.insert(ev.path, seq);
+            finalOp.insert(ev.path, true);
+            break;
+        case PendingEvent::Type::Remove:
+            finalOp.insert(ev.path, false);
+            break;
+        case PendingEvent::Type::Rename:
+            if(!firstRenameSeq.contains(ev.path))
+                firstRenameSeq.insert(ev.path, seq);
+            renameFinal.insert(ev.path, ev.newName);
+            renameSeq.insert(ev.path, seq);
+            break;
+        case PendingEvent::Type::Modify:
+            modifySet.insert(ev.path);
+            break;
+        }
+        ++seq;
+    }
+
+    // rename 按到达顺序输出（同旧路径取最后一次），保证链式 rename 可顺序套用
+    QVector<QPair<QString, QString>> renames;
     {
-        // true=add, false=remove；后面的 insert 覆盖前面的（last-op-wins）
-        QHash<QString, bool> isAdd;
-        for(const auto &p : adds) isAdd.insert(p, true);
-        for(const auto &p : removes) isAdd.insert(p, false);
-        adds.clear();
-        removes.clear();
-        for(auto it = isAdd.constBegin(); it != isAdd.constEnd(); ++it) {
-            if(it.value()) adds.append(it.key());
-            else removes.append(it.key());
+        QVector<QPair<QString, int>> ordered;
+        ordered.reserve(renameSeq.size());
+        for(auto it = renameSeq.constBegin(); it != renameSeq.constEnd(); ++it)
+            ordered.append(QPair<QString, int>(it.key(), it.value()));
+        std::sort(ordered.begin(), ordered.end(),
+                  [](const QPair<QString, int> &a, const QPair<QString, int> &b) {
+                      return a.second < b.second;
+                  });
+        renames.reserve(ordered.size());
+        for(const auto &o : ordered)
+            renames.append(QPair<QString, QString>(o.first, renameFinal.value(o.first)));
+    }
+
+    // "新建后随即重命名"：add 早于该路径首次 rename → 该 add 被消费，不再单独入列表
+    QSet<QString> consumedAdds;
+    for(auto it = addSeq.constBegin(); it != addSeq.constEnd(); ++it) {
+        auto f = firstRenameSeq.constFind(it.key());
+        if(f != firstRenameSeq.constEnd() && it.value() < f.value())
+            consumedAdds.insert(it.key());
+    }
+
+    QVector<QString> removes;
+    QVector<QString> adds;
+    for(auto it = finalOp.constBegin(); it != finalOp.constEnd(); ++it) {
+        if(it.value()) {
+            if(!consumedAdds.contains(it.key()))
+                adds.append(it.key());
+        } else {
+            removes.append(it.key());
         }
     }
 
-    // 处理顺序：重命名 → 删除 → 新增 → 修改
-    // （重命名需要旧条目仍在；同一路径的 add/remove 已由去重后的最终结果决定）
-    processPendingRenames(renames);
+    // 处理顺序：删除 → 重命名 → 新增 → 修改
+    // （先删后改名："删除 b + 把 a 改名为 b"必须按磁盘时序先删 b，rename 覆盖语义才正确）
     processPendingRemovals(removes);
+    processPendingRenames(renames);
     processPendingAdditions(adds);
-    processPendingModifications(modifies);
+    processPendingModifications(modifySet);
 }
 
 void DirectoryManager::processPendingRenames(const QVector<QPair<QString, QString>> &renames) {
@@ -784,13 +834,13 @@ void DirectoryManager::processPendingRenames(const QVector<QPair<QString, QStrin
             continue;
         }
 
-        // ⭐ fallback（极少情况：例如 watcher 丢事件 / 初始不同步）
+        // ⭐ fallback：旧条目不在列表中（本批内"新建后随即重命名"，add 已被消费；
+        // 或 watcher 丢事件 / 初始不同步）→ 直接把新路径插入列表
         const QString newPath = QDir(base).filePath(newName);
-        if(isDir(newPath)) {
-            renameDirEntry(DirPath(oldPath), DirName(newName));
-        } else {
-            renameFileEntry(FilePath(oldPath), FileName(newName));
-        }
+        if(isDir(newPath))
+            insertDirEntry(newPath);
+        else if(isFile(newPath))
+            insertFileEntry(newPath);
     }
 }
 
@@ -868,7 +918,7 @@ void DirectoryManager::processPendingAdditions(const QVector<QString> &adds) {
     if(adds.isEmpty())
         return;
 
-    // 去重并过滤已存在条目
+    // 去重；已存在的条目改为刷新元数据（覆盖"删除后重建"等场景）
     QVector<QString> paths;
     {
         QSet<QString> seen;
@@ -876,7 +926,11 @@ void DirectoryManager::processPendingAdditions(const QVector<QString> &adds) {
         for(const auto &p : adds) {
             if(seen.contains(p)) continue;
             seen.insert(p);
-            if(containsFile(p) || containsDir(p)) continue;
+            if(containsFile(p) || containsDir(p)) {
+                if(containsFile(p))
+                    updateFileEntry(p);
+                continue;
+            }
             paths.append(p);
         }
     }
@@ -895,11 +949,14 @@ void DirectoryManager::processPendingAdditions(const QVector<QString> &adds) {
             e.isDirectory = true;
             newDirs.push_back(std::move(e));
         } else if(!ec) {
-            const qsizetype dot = p.lastIndexOf(u'.');
-            if(dot <= 0 || dot == p.size() - 1) continue;
-            if(!isSupportedSuffix(QStringView(p).mid(dot + 1))) continue;
+            // ⭐ 用 basename 取后缀，与 addEntriesFromDirectory 保持一致，
+            // 避免监视目录路径自身含点时误判
+            const QString name = QString::fromStdWString(stdEntry.path().filename().wstring());
+            const qsizetype dot = name.lastIndexOf(u'.');
+            if(dot <= 0 || dot == name.size() - 1) continue;
+            if(!isSupportedSuffix(QStringView(name).mid(dot + 1))) continue;
             FSEntry e;
-            e.name = QString::fromStdWString(stdEntry.path().filename().wstring());
+            e.name = name;
             e.path = p;
             e.isDirectory = false;
             e.size = stdEntry.file_size(ec);
@@ -937,14 +994,8 @@ void DirectoryManager::processPendingAdditions(const QVector<QString> &adds) {
     }
 }
 
-void DirectoryManager::processPendingModifications(const QVector<QString> &modifies) {
-    if(modifies.isEmpty())
-        return;
-
-    QSet<QString> seen;
+void DirectoryManager::processPendingModifications(const QSet<QString> &modifies) {
     for(const auto &p : modifies) {
-        if(seen.contains(p)) continue;
-        seen.insert(p);
         // ⭐ 只在已存在时更新，避免无意义 filesystem 调用
         if(containsFile(p))
             updateFileEntry(p);
