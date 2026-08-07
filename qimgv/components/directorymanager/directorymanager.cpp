@@ -282,13 +282,13 @@ const FSEntry &DirectoryManager::fileEntryAt(int index) const {
 }
 
 bool DirectoryManager::isSupportedSuffix(const QStringView &suffix) const {
-    // ⭐ 快速路径：全小写后缀直接透明哈希查找，零分配；
-    // 含大写字符（罕见）时才 toLower 分配一次
-    for (QChar c : suffix) {
-        if (c.isUpper())
-            return mSupportedSuffixes.contains(suffix.toLower());
+    // ⭐ 无分配逐项比较：QSet<QString> 无 QStringView 透明哈希查找，
+    // 长度先判快速排除，再与已统一小写的集合元素做大小写不敏感比较
+    for (const QString &s : mSupportedSuffixes) {
+        if (suffix.size() == s.size() && suffix.compare(s, Qt::CaseInsensitive) == 0)
+            return true;
     }
-    return mSupportedSuffixes.contains(suffix);
+    return false;
 }
 
 bool DirectoryManager::isFile(const QString &path) const {
