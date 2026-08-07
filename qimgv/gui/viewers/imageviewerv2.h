@@ -151,6 +151,7 @@ private:
     QPoint mousePressPos;
     MouseInteractionState mouseInteraction;
     QPair<QPointF, QPoint> zoomAnchor;
+    bool scaledImageFitsCache;
 
     bool transparencyGrid;
     bool expandImage;
@@ -235,9 +236,9 @@ private:
     void handleTrackpadScroll(QWheelEvent* event);
     void handleMouseWheelScroll(QWheelEvent* event);
 
-    void centerIfNecessary();
-    void snapToEdges();
     void adjustViewport();
+    QPointF snappedCenter(QPointF center) const;
+    QPointF clampViewportCenter(QPointF center) const;
     void saveViewportPos();
     void applySavedViewportPos();
     void lockZoom();

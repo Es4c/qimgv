@@ -47,6 +47,7 @@ ImageViewerV2::ImageViewerV2(QWidget* parent)
     , mScalingFilter(QI_FILTER_BILINEAR)
     , zoomThreshold(ZOOM_THRESHOLD_FACTOR)
     , dragThreshold(10)
+    , scaledImageFitsCache(true)
 {
     setViewportUpdateMode(QGraphicsView::MinimalViewportUpdate);
     viewport()->setAttribute(Qt::WA_OpaquePaintEvent, true);
@@ -343,8 +344,9 @@ void ImageViewerV2::onAnimationTimer()
         }
     }
 
-    // 只获取一次当前帧，避免重复拷贝
-    const QPixmap frame = movie->currentPixmap();
+    // currentPixmap() 本身即 QMovie 的一次全量转换；用移动语义传递，
+    // 避免 const 引用路径下 setDevicePixelRatio 触发一次整帧深拷贝
+    QPixmap frame = movie->currentPixmap();
     if (frame.isNull())
         return;
 
@@ -359,7 +361,7 @@ void ImageViewerV2::onAnimationTimer()
         }
     }
 
-    updatePixmap(frame);
+    updatePixmap(std::move(frame));
 
     emit frameChanged(movie->currentFrameNumber());
     animationTimer->start(movie->nextFrameDelay());
@@ -852,7 +854,6 @@ void ImageViewerV2::adjustZoom(bool zoomIn, bool atCursor)
     }
 
     zoomAnchored(newScale);
-    adjustViewport();
 
     imageFitMode = FIT_FREE;
 
@@ -873,8 +874,12 @@ void ImageViewerV2::setZoomAnchor(QPoint viewportPos)
 void ImageViewerV2::zoomAnchored(float newScale)
 {
     const float current = currentScaleInternal();
-    if (current == newScale)
+
+    if (current == newScale) {
+        // 缩放量不变时仍做一次边缘钳制，等价原调用方的 adjustViewport
+        centerOn(clampViewportCenter(mapToScene(viewport()->rect().center())));
         return;
+    }
 
     const QPoint viewportCenter = viewport()->rect().center();
     const QPointF sceneCenter = mapToScene(viewportCenter);
@@ -890,7 +895,8 @@ void ImageViewerV2::zoomAnchored(float newScale)
     const QPointF diff =
         zoomAnchor.second - mapped;
 
-    centerOn(sceneCenter - diff);
+    // 锚点保持 + 边缘钳制合并为一次 centerOn（原实现由调用方再调 adjustViewport）
+    centerOn(clampViewportCenter(sceneCenter - diff));
 
     requestScaling();
 }
@@ -906,9 +912,11 @@ void ImageViewerV2::doZoom(float newScale, bool center)
     if (qFuzzyCompare(1.0f + newScale, 1.0f + current))
         return;
 
-    // ✅ 关键：保持当前 scene 中心不变（仅在调用方需要时执行）
-    const QPoint viewportCenter = viewport()->rect().center();
-    const QPointF sceneCenterBefore = mapToScene(viewportCenter);
+    // ✅ 关键：保持当前 scene 中心不变（仅在调用方需要时执行）。
+    // 必须在 setScale 之前计算，否则取到的是缩放后的中心。
+    QPointF sceneCenterBefore;
+    if (center)
+        sceneCenterBefore = mapToScene(viewport()->rect().center());
 
     pixmapItem.setScale(newScale);
     pixmapItem.setTransformationMode(selectTransformationMode());
@@ -994,15 +1002,22 @@ void ImageViewerV2::fitWidth()
         doZoom(scaleX);
     }
 
-    centerIfNecessary();
+    // 合并原 centerIfNecessary + 顶部对齐 + snapToEdges 的三次 centerOn 为一次，
+    // 每次 centerOn 都会更新滚动条并触发重绘；先算出目标中心再统一钳制，
+    // 最终位置与原实现完全一致
+    const QRectF img = pixmapItem.sceneBoundingRect();
+    const int viewportW = viewport()->width();
+    const int viewportH = viewport()->height();
 
-    if (scaledSizeR().height() > viewport()->height()) {
-        QPointF centerTarget = mapToScene(viewport()->rect()).boundingRect().center();
-        centerTarget.setY(0);
-        centerOn(centerTarget);
-    }
+    QPointF center = mapToScene(viewport()->rect().center());
+    if (qRound(img.width()) <= viewportW)
+        center.setX(img.center().x());
+    if (qRound(img.height()) <= viewportH)
+        center.setY(img.center().y());
+    if (scaledSizeR().height() > viewportH)
+        center.setY(0);
 
-    snapToEdges();
+    centerOn(snappedCenter(center));
 }
 
 void ImageViewerV2::fitWindow()
@@ -1059,13 +1074,22 @@ void ImageViewerV2::fitFree(float scale)
 
     if (focusIn1to1 == FOCUS_TOP) {
         doZoom(scale);
-        centerIfNecessary();
-        if (scaledSizeR().height() > viewport()->height()) {
-            QPointF centerTarget = pixmapItem.sceneBoundingRect().center();
-            centerTarget.setY(0);
-            centerOn(centerTarget);
+
+        // 与原逻辑一致：居中 + 可选顶部对齐后统一钳制，合并为单次 centerOn
+        const QRectF img = pixmapItem.sceneBoundingRect();
+        const int viewportH = viewport()->height();
+
+        QPointF center = mapToScene(viewport()->rect().center());
+        if (qRound(img.width()) <= viewport()->width())
+            center.setX(img.center().x());
+        if (qRound(img.height()) <= viewportH)
+            center.setY(img.center().y());
+        if (scaledSizeR().height() > viewportH) {
+            center.setX(img.center().x());
+            center.setY(0);
         }
-        snapToEdges();
+
+        centerOn(snappedCenter(center));
     } else {
         if (focusIn1to1 == FOCUS_CENTER)
             setZoomAnchor(viewport()->rect().center());
@@ -1073,7 +1097,6 @@ void ImageViewerV2::fitFree(float scale)
             setZoomAnchor(mapFromGlobal(cursor().pos()));
 
         zoomAnchored(scale);
-        adjustViewport();
     }
 }
 
@@ -1121,58 +1144,48 @@ void ImageViewerV2::centerOnPixmap()
     centerOn(x, y);
 }
 
-void ImageViewerV2::centerIfNecessary()
+QPointF ImageViewerV2::snappedCenter(QPointF center) const
+{
+    const QRectF img = pixmapItem.sceneBoundingRect();
+    const QRectF vport = mapToScene(viewport()->rect()).boundingRect();
+
+    const qreal vW = vport.width();
+    const qreal vH = vport.height();
+
+    // 贴边：以传入的目标中心为基准计算最终 vport，钳制到图片边缘内
+    if (img.width() > vW) {
+        if (img.left() > center.x() - vW / 2.0)
+            center.rx() += img.left() - (center.x() - vW / 2.0);
+        else if (img.right() < center.x() + vW / 2.0)
+            center.rx() += img.right() - (center.x() + vW / 2.0);
+    }
+
+    if (img.height() > vH) {
+        if (img.top() > center.y() - vH / 2.0)
+            center.ry() += img.top() - (center.y() - vH / 2.0);
+        else if (img.bottom() < center.y() + vH / 2.0)
+            center.ry() += img.bottom() - (center.y() + vH / 2.0);
+    }
+
+    return center;
+}
+
+QPointF ImageViewerV2::clampViewportCenter(QPointF center) const
 {
     if (!pixmap)
-        return;
+        return center;
 
     const QRectF img = pixmapItem.sceneBoundingRect();
-    QPointF center = mapToScene(viewport()->rect().center());
-
     const int viewportW = viewport()->width();
     const int viewportH = viewport()->height();
 
-    bool changed = false;
-
-    if (qRound(img.width()) <= viewportW) {
+    // 居中优先（与 centerIfNecessary 判断条件一致）
+    if (qRound(img.width()) <= viewportW)
         center.setX(img.center().x());
-        changed = true;
-    }
-
-    if (qRound(img.height()) <= viewportH) {
+    if (qRound(img.height()) <= viewportH)
         center.setY(img.center().y());
-        changed = true;
-    }
 
-    if (changed)
-        centerOn(center);
-}
-
-void ImageViewerV2::snapToEdges()
-{
-    const QRectF imgScene = pixmapItem.sceneBoundingRect();
-    const QRectF vportScene = mapToScene(viewport()->rect()).boundingRect();
-
-    const QPointF centerTarget = vportScene.center();
-
-    qreal xShift = 0.0;
-    qreal yShift = 0.0;
-
-    if (imgScene.width() > vportScene.width()) {
-        if (imgScene.left() > vportScene.left())
-            xShift = imgScene.left() - vportScene.left();
-        else if (imgScene.right() < vportScene.right())
-            xShift = imgScene.right() - vportScene.right();
-    }
-
-    if (imgScene.height() > vportScene.height()) {
-        if (imgScene.top() > vportScene.top())
-            yShift = imgScene.top() - vportScene.top();
-        else if (imgScene.bottom() < vportScene.bottom())
-            yShift = imgScene.bottom() - vportScene.bottom();
-    }
-
-    centerOn(centerTarget + QPointF(xShift, yShift));
+    return snappedCenter(center);
 }
 
 void ImageViewerV2::adjustViewport()
@@ -1180,35 +1193,8 @@ void ImageViewerV2::adjustViewport()
     if (!pixmap)
         return;
 
-    const QRectF img = pixmapItem.sceneBoundingRect();
-    const QRectF vport = mapToScene(viewport()->rect()).boundingRect();
-
-    const int viewportW = viewport()->width();
-    const int viewportH = viewport()->height();
-
-    QPointF centerTarget = vport.center();
-
-    // 居中优先（与 centerIfNecessary 判断条件一致）
-    if (qRound(img.width()) <= viewportW) {
-        centerTarget.setX(img.center().x());
-    } else if (img.width() > vport.width()) {
-        // 贴边（与 snapToEdges 判断条件一致）
-        if (img.left() > vport.left())
-            centerTarget.rx() += img.left() - vport.left();
-        else if (img.right() < vport.right())
-            centerTarget.rx() += img.right() - vport.right();
-    }
-
-    if (qRound(img.height()) <= viewportH) {
-        centerTarget.setY(img.center().y());
-    } else if (img.height() > vport.height()) {
-        if (img.top() > vport.top())
-            centerTarget.ry() += img.top() - vport.top();
-        else if (img.bottom() < vport.bottom())
-            centerTarget.ry() += img.bottom() - vport.bottom();
-    }
-
-    centerOn(centerTarget);
+    const QPointF centerTarget = mapToScene(viewport()->rect().center());
+    centerOn(clampViewportCenter(centerTarget));
 }
 
 // ============================================================================
@@ -1305,6 +1291,9 @@ void ImageViewerV2::mousePressEvent(QMouseEvent* event)
     mouseMoveStartPos = event->pos();
     mousePressPos = mouseMoveStartPos;
 
+    // 拖拽/平移期间缩放与视口均不变，手势开始时预计算一次，避免每次 move 重复计算
+    scaledImageFitsCache = scaledImageFits();
+
     if (event->button() & Qt::RightButton) {
         setZoomAnchor(event->pos());
     } else {
@@ -1321,7 +1310,7 @@ void ImageViewerV2::mouseMoveEvent(QMouseEvent* event)
 
     if (event->buttons() & Qt::LeftButton) {
         if (mouseInteraction == MOUSE_NONE) {
-            if (scaledImageFits()) {
+            if (scaledImageFitsCache) {
                 if (dragsEnabled)
                     mouseInteraction = MOUSE_DRAG_BEGIN;
             } else {
@@ -1384,7 +1373,7 @@ void ImageViewerV2::mouseReleaseEvent(QMouseEvent* event)
 
 void ImageViewerV2::mousePan(QMouseEvent* event)
 {
-    if (scaledImageFits())
+    if (scaledImageFitsCache)
         return;
 
     mouseMoveStartPos -= event->pos();
@@ -1402,7 +1391,6 @@ void ImageViewerV2::mouseMoveZoom(QMouseEvent* event)
     imageFitMode = FIT_FREE;
 
     zoomAnchored(newScale);
-    adjustViewport();
 
     if (pixmapItem.scale() == fitWindowScale)
         imageFitMode = FIT_WINDOW;
@@ -1548,7 +1536,17 @@ void ImageViewerV2::drawBackground(QPainter* painter, const QRectF& rect)
     if (!isDisplaying() || !transparencyGrid || !pixmap->hasAlphaChannel())
         return;
 
-    painter->drawTiledPixmap(rect.intersected(pixmapItem.sceneBoundingRect()), checkboard);
+    // 直接按已知状态算术计算 item 的 scene 矩形，避免每次绘制都走 QGraphicsItem
+    // 矩阵换算：pixmapItem 位置恒为原点、offset 与 transformOriginPoint 均为
+    // CENTER_OFFSET、仅 scale 变化，故 sceneBoundingRect = (offset, scale * size / dpr)
+    const QPointF off = pixmapItem.offset();
+    const qreal s = pixmapItem.scale();
+    const qreal pixDpr = pixmap->devicePixelRatio();
+    const QRectF itemRect(off.x(), off.y(),
+                          static_cast<qreal>(pixmap->width()) / pixDpr * s,
+                          static_cast<qreal>(pixmap->height()) / pixDpr * s);
+
+    painter->drawTiledPixmap(rect.intersected(itemRect), checkboard);
 }
 
 // ============================================================================
