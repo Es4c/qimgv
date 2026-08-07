@@ -2,21 +2,34 @@
 
 #include <QObject>
 #include <memory>
+#include <type_traits>
+#include <climits>
 #include "gui/idirectoryview.h"
 #include "directorymodel.h"
 #include "sharedresources.h"
 #include <QMimeData>
-
-//tmp
-#include <QtSvg/QSvgRenderer>
-#include <QPixmap>
 
 class DirectoryPresenter : public QObject {
     Q_OBJECT
 public:
     explicit DirectoryPresenter(QObject *parent = nullptr);
 
-    void setView(const std::shared_ptr<IDirectoryView> &);
+    // 模板函数：保持插件动态加载的同时，用函数指针连接（编译期检查信号签名）
+    template <typename ViewType>
+    void setView(const std::shared_ptr<ViewType> &_view) {
+        static_assert(std::is_base_of_v<QObject, ViewType>, "ViewType 必须继承自 QObject");
+        static_assert(std::is_base_of_v<IDirectoryView, ViewType>, "ViewType 必须实现 IDirectoryView");
+        if(view)
+            return;
+        view = _view;
+        if(model)
+            view->populate(mShowDirs ? qMin(static_cast<int>(model->totalCount()), INT_MAX) : qMin(static_cast<int>(model->fileCount()), INT_MAX));
+        connect(_view.get(), &ViewType::itemActivated, this, &DirectoryPresenter::onItemActivated);
+        connect(_view.get(), &ViewType::draggedOut,    this, &DirectoryPresenter::onDraggedOut);
+        connect(_view.get(), &ViewType::draggedOver,   this, &DirectoryPresenter::onDraggedOver);
+        connect(_view.get(), &ViewType::droppedInto,   this, &DirectoryPresenter::onDroppedInto);
+    }
+
     void setModel(const std::shared_ptr<DirectoryModel> &newModel);
     void unsetModel();
 
@@ -45,7 +58,6 @@ signals:
     void droppedInto(QList<QString>, QString);
 
 public slots:
-    void disconnectView();
     void reloadModel();
 
 private slots:
@@ -59,15 +71,7 @@ private:
     std::shared_ptr<IDirectoryView> view = nullptr;
     std::shared_ptr<DirectoryModel> model = nullptr;
     bool mShowDirs = false;
-    QObject *viewObject = nullptr;
-    
-    // 目录图标缓存
-    std::shared_ptr<const QPixmap> mCachedDirPixmap;
-    int mCachedDirSize = 0;
     
     // 辅助函数：将文件索引转换为视图中的绝对索引
     int fileIndexToViewIndex(int fileIndex) const;
-    
-    // 辅助函数：获取 QObject 指针
-    QObject *viewAsObject();
 };

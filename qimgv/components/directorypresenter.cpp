@@ -16,29 +16,6 @@ void DirectoryPresenter::unsetModel() {
     model = nullptr;
 }
 
-QObject *DirectoryPresenter::viewAsObject() {
-    if (!viewObject && view)
-        viewObject = dynamic_cast<QObject *>(view.get());
-    return viewObject;
-}
-
-void DirectoryPresenter::setView(const std::shared_ptr<IDirectoryView> &_view) {
-    if(view)
-        return;
-    view = _view;
-    viewObject = dynamic_cast<QObject *>(view.get());
-    if(model)
-        view->populate(mShowDirs ? qMin(static_cast<int>(model->totalCount()), INT_MAX) : qMin(static_cast<int>(model->fileCount()), INT_MAX));
-    connect(viewObject, SIGNAL(itemActivated(int)),
-            this, SLOT(onItemActivated(int)));
-    connect(viewObject, SIGNAL(draggedOut()),
-            this, SLOT(onDraggedOut()));
-    connect(viewObject, SIGNAL(draggedOver(int)),
-            this, SLOT(onDraggedOver(int)));
-    connect(viewObject, SIGNAL(droppedInto(const QMimeData*,QObject*,int)),
-            this, SLOT(onDroppedInto(const QMimeData*,QObject*,int)));
-}
-
 void DirectoryPresenter::setModel(const std::shared_ptr<DirectoryModel> &newModel) {
     if(model)
         unsetModel();
@@ -64,12 +41,25 @@ void DirectoryPresenter::reloadModel() {
 void DirectoryPresenter::populateView() {
     if(!model || !view)
         return;
+    // populate 会清空选中，先记住当前选中路径，重建后按路径恢复
+    QString selectedPath;
+    const QList<int> selection = view->selection();
+    if(!selection.isEmpty()) {
+        const int i = selection.first();
+        if(mShowDirs) {
+            if(i < model->dirCount())
+                selectedPath = model->dirPathAt(i);
+            else
+                selectedPath = model->filePathAt(i - model->dirCount());
+        } else {
+            selectedPath = model->filePathAt(i);
+        }
+    }
     view->populate(mShowDirs ? qMin(static_cast<int>(model->totalCount()), INT_MAX) : qMin(static_cast<int>(model->fileCount()), INT_MAX));
-    selectAndFocus(0);
-}
-
-void DirectoryPresenter::disconnectView() {
-   // todo
+    if(!selectedPath.isEmpty())
+        selectAndFocus(selectedPath);
+    else
+        selectAndFocus(0);
 }
 
 //------------------------------------------------------------------------------
@@ -96,6 +86,12 @@ void DirectoryPresenter::onFileRenamed(const QString &fromPath, int indexFrom, c
     int viewIndexFrom = fileIndexToViewIndex(indexFrom);
     int viewIndexTo = fileIndexToViewIndex(indexTo);
     
+    // 同位置重命名（如仅改大小写、排序位置不变）：直接刷新文本，免去 remove+insert 全量重排与 selection 拷贝
+    if(viewIndexFrom == viewIndexTo) {
+        view->reloadItem(viewIndexFrom);
+        return;
+    }
+
     // removeItem 后，如果 viewIndexFrom < viewIndexTo，插入位置需要减1
     auto oldSelection = view->selection();
     view->removeItem(viewIndexFrom);
@@ -140,6 +136,11 @@ void DirectoryPresenter::onDirRenamed(const QString &fromPath, int indexFrom, co
     Q_UNUSED(toPath)
     if(!view || !mShowDirs)
         return;
+    // 同位置重命名（排序位置不变）：直接刷新文本，免去 remove+insert 全量重排与 selection 拷贝
+    if(indexFrom == indexTo) {
+        view->reloadItem(indexFrom);
+        return;
+    }
     auto oldSelection = view->selection();
     view->removeItem(indexFrom);
     view->insertItem(indexTo);
@@ -219,11 +220,12 @@ void DirectoryPresenter::onDraggedOut() {
 }
 
 void DirectoryPresenter::onDraggedOver(int index) {
-    if(!model || view->selection().contains(index))
+    // 先做廉价检查短路：非目录模式下/悬停目标不是目录时，避免昂贵的 view->selection()
+    if(!model || !mShowDirs || index >= model->dirCount())
         return;
-    if(showDirs() && index < model->dirCount())
-        view->setDragHover(index);
-
+    if(view->selection().contains(index))
+        return;
+    view->setDragHover(index);
 }
 
 void DirectoryPresenter::onDroppedInto(const QMimeData *data, QObject *source, int targetIndex) {
