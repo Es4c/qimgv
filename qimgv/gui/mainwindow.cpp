@@ -911,9 +911,8 @@ void MW::onInfoUpdated() {
 
 void MW::setExifInfo(const QHash<QString, QString> &info) {
     m_exifInfo = info;
-    // overlay 不可见时跳过更新，显示时再同步
-    if(imageInfoOverlay && !imageInfoOverlay->isHidden())
-        imageInfoOverlay->setExifInfo(info);
+    if(imageInfoOverlay)
+        imageInfoOverlay->setExifInfo(info);  // proxy 内部 stateBuf 始终更新
 }
 
 void MW::showMessageDirectory(const QString& dirName) {
