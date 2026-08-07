@@ -57,6 +57,13 @@ struct CurrentInfo {
     bool edited = false;
 };
 
+// 优化：info bar 输出缓存，文本未变化时跳过 setInfo
+struct InfoBarCache {
+    QString position;
+    QString fileName;
+    QString info;
+};
+
 enum ActiveSidePanel {
     SIDEPANEL_CROP,
     SIDEPANEL_NONE
@@ -108,6 +115,8 @@ private:
     bool fullUiInitialized = false;
     bool firstShowHandled = false;
     QString m_lastWindowTitle;
+    InfoBarCache m_windowedBar;
+    InfoBarCache m_fullscreenBar;
     QLocale m_locale;
 
     void saveWindowGeometry();
@@ -127,9 +136,9 @@ private:
     void setInteractionEnabled(bool mode);
 
     // 辅助方法
-    QString calculateWindowTitle(bool zoomLock, bool viewLock, bool showStates);
+    QString calculateWindowTitle(bool showStates, const QString& fileSizeStr, const QString& states);
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-    void calculateInfoBarContent(QString& infoText, QString& sizeText, bool zoomLock, bool viewLock, bool showStates);
+    void calculateInfoBarContent(QString& infoText, QString& sizeText, bool showStates, const QString& fileSizeStr, const QString& states);
 
 private slots:
     void updateCurrentDisplay();

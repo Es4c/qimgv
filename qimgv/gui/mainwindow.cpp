@@ -510,21 +510,26 @@ void MW::showSaveDialog(const QString& filePath) {
 QString MW::getSaveFileName(const QString & filePath) {
     docWidget->hideFloatingPanel();
 
-    QStringList filters;
-    filters.reserve(20);
-
     const auto writerFormats = QImageWriter::supportedImageFormats();
 
-    // ⭐ 关键优化：QSet 加速 contains
-    QSet<QByteArray> writerSet(writerFormats.begin(), writerFormats.end());
+    QStringList filters;
+    filters.reserve(writerFormats.size());
 
-    QSet<QString> addedFormats;
-    addedFormats.reserve(writerFormats.size());
+    // ⭐ 关键优化：QSet 加速 contains
+    QSet<QString> supported;
+    supported.reserve(writerFormats.size());
+    for(const auto& format : writerFormats)
+        supported.insert(QString::fromUtf8(format));
+
+    // 已被自定义描述的格式，避免尾部循环重复添加
+    QSet<QString> covered;
+    covered.reserve(14);
 
     auto addFilter = [&](const QByteArray& format, const QString& description) {
-        if(writerSet.contains(format)) {
+        const QString fmt = QString::fromUtf8(format);
+        if(supported.contains(fmt)) {
             filters.append(description);
-            addedFormats.insert(QString::fromUtf8(format));
+            covered.insert(fmt);
         }
     };
 
@@ -546,8 +551,8 @@ QString MW::getSaveFileName(const QString & filePath) {
     addFilter("wbmp", u"WBMP (*.wbmp)"_s);
 
     for (const auto& format : writerFormats) {
-        QString fmtStr = QString::fromUtf8(format);
-        if (addedFormats.contains(fmtStr))
+        const QString fmtStr = QString::fromUtf8(format);
+        if (covered.contains(fmtStr))
             continue;
 
         filters.append(fmtStr.toUpper() + u" (*." + fmtStr + u")");
@@ -638,8 +643,8 @@ void MW::showFullScreen() {
     
     // 如果窗口当前所在屏幕与目标屏幕不一致，则移动到目标屏幕
     if(screens.count() > currentDisplay && currentDisplay != _currentDisplay) {
-        this->move(screens.at(currentDisplay)->geometry().x(),
-                   screens.at(currentDisplay)->geometry().y());
+        const QRect targetGeom = screens.at(currentDisplay)->geometry();
+        this->move(targetGeom.x(), targetGeom.y());
     }
     
     QWidget::showFullScreen();
@@ -785,7 +790,7 @@ void MW::setCurrentInfo(int _index, int _fileCount, const QString& _filePath, co
     onInfoUpdated();
 }
 
-QString MW::calculateWindowTitle(bool zoomLock, bool viewLock, bool showStates) {
+QString MW::calculateWindowTitle(bool showStates, const QString& fileSizeStr, const QString& states) {
     if(info.fileName.isEmpty()) {
         return qApp->applicationName();
     }
@@ -813,19 +818,11 @@ QString MW::calculateWindowTitle(bool zoomLock, bool viewLock, bool showStates) 
                          + QString::number(info.imageSize.height());
         }
 
-        if(info.fileSize) {
-            windowTitle += u"  -  "_s
-                         + m_locale.formattedDataSize(info.fileSize, 1);
+        // 文件大小字符串由调用方统一格式化，避免重复计算
+        if(!fileSizeStr.isEmpty()) {
+            windowTitle += u"  -  "_s + fileSizeStr;
         }
     }
-
-    QString states;
-    states.reserve(64);
-
-    if(info.slideshow) states += u" [slideshow]"_s;
-    if(info.shuffle)   states += u" [shuffle]"_s;
-    if(zoomLock)       states += u" [zoom lock]"_s;
-    if(viewLock)       states += u" [view lock]"_s;
 
     if(showStates && !states.isEmpty()) {
         windowTitle += u" -"_s + states;
@@ -838,7 +835,7 @@ QString MW::calculateWindowTitle(bool zoomLock, bool viewLock, bool showStates) 
     return windowTitle;
 }
 
-void MW::calculateInfoBarContent(QString& infoText, QString& sizeText, bool zoomLock, bool viewLock, bool showStates) {
+void MW::calculateInfoBarContent(QString& infoText, QString& sizeText, bool showStates, const QString& fileSizeStr, const QString& states) {
     if(info.fileName.isEmpty()) {
         infoText = tr("No file opened.");
         sizeText.clear();
@@ -856,25 +853,13 @@ void MW::calculateInfoBarContent(QString& infoText, QString& sizeText, bool zoom
                   + QString::number(info.imageSize.height());
     }
 
-    QString sizeString;
-    if(info.fileSize)
-        sizeString = m_locale.formattedDataSize(info.fileSize, 1);
-
     sizeText.clear();
-    sizeText.reserve(resString.size() + sizeString.size() + 32);
+    sizeText.reserve(resString.size() + fileSizeStr.size() + 32);
 
     sizeText += resString;
-    if(!resString.isEmpty() && !sizeString.isEmpty())
+    if(!resString.isEmpty() && !fileSizeStr.isEmpty())
         sizeText += u"  "_s;
-    sizeText += sizeString;
-
-    QString states;
-    states.reserve(64);
-
-    if(info.slideshow) states += u" [slideshow]"_s;
-    if(info.shuffle)   states += u" [shuffle]"_s;
-    if(zoomLock)       states += u" [zoom lock]"_s;
-    if(viewLock)       states += u" [view lock]"_s;
+    sizeText += fileSizeStr;
 
     if(showStates && !states.isEmpty())
         sizeText += u" "_s + states;
@@ -889,24 +874,48 @@ void MW::onInfoUpdated() {
     const bool viewLock = viewerWidget->lockViewEnabled();
     const bool showStates = !settings->infoBarWindowed();
 
-    const QString newTitle = calculateWindowTitle(zoomLock, viewLock, showStates);
+    // ⭐ 文件大小只格式化一次，窗口标题和 info bar 共用
+    const QString fileSizeStr = (info.fileSize > 0) ? m_locale.formattedDataSize(info.fileSize, 1) : QString();
+
+    // ⭐ 状态字符串也只拼一次
+    QString states;
+    states.reserve(64);
+
+    if(info.slideshow) states += u" [slideshow]"_s;
+    if(info.shuffle)   states += u" [shuffle]"_s;
+    if(zoomLock)       states += u" [zoom lock]"_s;
+    if(viewLock)       states += u" [view lock]"_s;
+
+    const QString newTitle = calculateWindowTitle(showStates, fileSizeStr, states);
     if(newTitle != m_lastWindowTitle) {
         m_lastWindowTitle = newTitle;
         setWindowTitle(newTitle);
     }
 
     QString infoText, sizeText;
-    calculateInfoBarContent(infoText, sizeText, zoomLock, viewLock, showStates);
+    calculateInfoBarContent(infoText, sizeText, showStates, fileSizeStr, states);
 
     QString posString;
     if(info.fileCount)
         posString = u"[ %1/%2 ]"_s.arg(info.index + 1).arg(info.fileCount);
 
-    // 只更新当前可见的 info bar
-    if(isFullScreen())
-        infoBarFullscreen->setInfo(posString, infoText, sizeText);
-    else
-        infoBarWindowed->setInfo(posString, infoText, sizeText);
+    // ⭐ 输出缓存：当前可见 info bar 的文本未变化时跳过 setInfo，避免无谓重绘
+    // 两个 bar 分开缓存，切换全屏/窗口模式后能正确刷新到另一侧
+    if(isFullScreen()) {
+        if(posString != m_fullscreenBar.position ||
+           infoText != m_fullscreenBar.fileName ||
+           sizeText != m_fullscreenBar.info) {
+            m_fullscreenBar = {posString, infoText, sizeText};
+            infoBarFullscreen->setInfo(posString, infoText, sizeText);
+        }
+    } else {
+        if(posString != m_windowedBar.position ||
+           infoText != m_windowedBar.fileName ||
+           sizeText != m_windowedBar.info) {
+            m_windowedBar = {posString, infoText, sizeText};
+            infoBarWindowed->setInfo(posString, infoText, sizeText);
+        }
+    }
 }
 
 void MW::setExifInfo(const QHash<QString, QString> &info) {
@@ -1030,8 +1039,9 @@ void MW::paintEvent(QPaintEvent *event) {
     static const QColor bgColor(0x1a, 0x1a, 0x1a);
     QPainter p(this);
 
-    // ⭐ 只填充实际脏区，避免整窗重复绘制
-    p.fillRect(event->region().boundingRect(), bgColor);
+    // ⭐ 只填充实际脏区，避免整窗重复绘制（逐矩形填充，不放大到 boundingRect）
+    for(const QRect& r : event->region())
+        p.fillRect(r, bgColor);
 
     // 再让子控件绘制
     QWidget::paintEvent(event);
