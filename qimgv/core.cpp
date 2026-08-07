@@ -1,6 +1,7 @@
 #include "core.h"
 #include <QSettings>
 #include <QMimeData>
+#include <QCryptographicHash>
 
 #ifdef __WIN32
 #include <tchar.h>
