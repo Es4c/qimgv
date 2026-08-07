@@ -17,6 +17,26 @@ void ImageLib::recolor(QPixmap &pixmap, const QColor &color) {
     // QPainter 在作用域结束时自动销毁，释放资源
 }
 
+// --- 90° 倍数旋转的快速路径 ---
+
+// 90° 倍数旋转像素 1:1 映射：180° 用两次原地翻转实现（零分配），
+// 其余用 FastTransformation（避免 Smooth 的插值开销及包围盒取整造成的轻微模糊）
+static QImage rotated90Multiple(QImage src, int grad) {
+    const int quarter = ((grad / 90) % 4 + 4) % 4;   // 归一化到 0..3
+    switch (quarter) {
+        case 0:
+            return std::move(src);
+        case 2: // 180°：水平 + 垂直原地翻转
+            return std::move(src).flipped(Qt::Horizontal).flipped(Qt::Vertical);
+        default: {
+            // 顺时针 90°（quarter==1）或逆时针 90°（quarter==3）
+            QTransform trans;
+            trans.rotate(quarter == 1 ? 90 : -90);
+            return src.transformed(trans, Qt::FastTransformation);
+        }
+    }
+}
+
 QImage ImageLib::rotatedRaw(const QImage &src, int grad) {
     if (src.isNull()) return QImage();
     QTransform transform;
@@ -29,6 +49,11 @@ QImage ImageLib::rotated(QImage src, int grad) {
     if (grad % 360 == 0) {
         return std::move(src);
     }
+    // 90° 倍数旋转走快速路径（180° 原地翻转零拷贝）
+    if (grad % 90 == 0) {
+        return rotated90Multiple(std::move(src), grad);
+    }
+    // 任意角度才用平滑变换
     return rotatedRaw(src, grad);
 }
 
@@ -73,21 +98,27 @@ QImage ImageLib::flippedV(QImage src) {
 QImage ImageLib::exifRotated(QImage src, int orientation) {
     if (src.isNull() || orientation <= 1) return std::move(src);
 
-    QTransform trans;
-    bool needsTransform = true;
-
     switch (orientation) {
-        case 2: trans.scale(-1, 1); break;
-        case 3: trans.rotate(180); break;
-        case 4: trans.scale(1, -1); break;
-        case 5: trans.scale(-1, 1); trans.rotate(90); break;
-        case 6: trans.rotate(90); break;
-        case 7: trans.scale(1, -1); trans.rotate(90); break;
-        case 8: trans.rotate(-90); break;
-        default: needsTransform = false; break;
+        // 纯镜像/180°：Qt6 flipped() 右值重载原地翻转，零拷贝零分配
+        case 2: return std::move(src).flipped(Qt::Horizontal);
+        case 3: return std::move(src).flipped(Qt::Horizontal).flipped(Qt::Vertical);
+        case 4: return std::move(src).flipped(Qt::Vertical);
+        // 90°/270°：复用 90° 快速路径
+        case 6: return rotated90Multiple(std::move(src), 90);
+        case 8: return rotated90Multiple(std::move(src), -90);
+        // 90° + 镜像：像素 1:1 映射，FastTransformation 避免插值及包围盒取整模糊
+        case 5: {
+            QTransform trans;
+            trans.scale(-1, 1); trans.rotate(90);
+            return src.transformed(trans, Qt::FastTransformation);
+        }
+        case 7: {
+            QTransform trans;
+            trans.scale(1, -1); trans.rotate(90);
+            return src.transformed(trans, Qt::FastTransformation);
+        }
+        default: return std::move(src);
     }
-
-    return needsTransform ? src.transformed(trans, Qt::SmoothTransformation) : std::move(src);
 }
 
 // --- 缩放：Qt 路径 ---
