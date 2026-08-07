@@ -63,11 +63,6 @@ void Scaler::onTaskStart(const ScalerRequest &req) {
     QMutexLocker locker(&mutex);
 
     running = true;
-
-    if (buffered && bufferedRequest == req) {
-        buffered = false;
-    }
-
     startedRequest = req;
 }
 
