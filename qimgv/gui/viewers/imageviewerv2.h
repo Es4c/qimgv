@@ -211,7 +211,7 @@ private:
 
     void adjustZoom(bool zoomIn, bool atCursor);
     void zoomAnchored(float newScale);
-    void doZoom(float newScale);
+    void doZoom(float newScale, bool center = true);
     void setZoomAnchor(QPoint viewportPos);
 
     void fitNormal();
@@ -237,6 +237,7 @@ private:
 
     void centerIfNecessary();
     void snapToEdges();
+    void adjustViewport();
     void saveViewportPos();
     void applySavedViewportPos();
     void lockZoom();
