@@ -17,13 +17,20 @@ void FloatingWidget::setContainerSize(QSize newContainer) {
     if(container == newContainer)
         return;
     container = newContainer;
-    // 隐藏时无需重算几何；下次 show() 时再补一次
+    // 隐藏时无需重算几何；显示前由 showEvent() 补齐
     if(isVisible())
         recalculateGeometry();
 }
 
 void FloatingWidget::onContainerResized(QSize size) {
     setContainerSize(size);
+}
+
+void FloatingWidget::showEvent(QShowEvent *event) {
+    // 隐藏期间容器尺寸可能已变化（setContainerSize 在隐藏时跳过重算），
+    // 显示前补齐几何，避免各子类各自处理 show()
+    recalculateGeometry();
+    QWidget::showEvent(event);
 }
 
 void FloatingWidget::paintEvent(QPaintEvent *event) {

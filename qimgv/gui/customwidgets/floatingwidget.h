@@ -30,6 +30,7 @@ protected:
     // called whenever container rectangle changes
     // this does nothing, reimplement to use
     virtual void recalculateGeometry();
+    void showEvent(QShowEvent *event) override;
     void paintEvent(QPaintEvent *event);
     void setContainerSize(QSize newContainer);
 

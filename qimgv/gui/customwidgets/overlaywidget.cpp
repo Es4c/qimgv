@@ -66,8 +66,7 @@ void OverlayWidget::setFadeEnabled(bool mode) {
 void OverlayWidget::show() {
     fadeAnimation->stop();
     opacityEffect->setOpacity(1.0);
-    // 隐藏期间容器可能已变化，显示前重新计算几何
-    recalculateGeometry();
+    // 几何重算已统一下沉到 FloatingWidget::showEvent()，这里只负责淡入
     FloatingWidget::show();
 }
 

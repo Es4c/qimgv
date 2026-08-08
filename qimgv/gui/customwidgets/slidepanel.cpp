@@ -21,7 +21,7 @@ void SlidePanel::hide() {
 }
 
 void SlidePanel::show() {
-    QWidget::show();
+    FloatingWidget::show();
 }
 
 void SlidePanel::setPosition(PanelPosition p) {

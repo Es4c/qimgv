@@ -1,6 +1,8 @@
 #include "iconwidget.h"
 
 #include <QHash>
+#include <QEvent>
+#include <QShowEvent>
 
 namespace {
     // 共享图标缓存：同一 (路径, dpr, 颜色) 只解码/着色一次，
@@ -79,8 +81,35 @@ void IconWidget::loadIcon() {
     }
     rawPixmap = it.value();
     pixmap = rawPixmap;
-    applyColor();
-    update();
+    if(colorMode == ICON_COLOR_SOURCE)
+        update(); // SOURCE 模式不着色，applyColor 会直接返回，需手动刷新
+    else
+        applyColor(); // applyColor 内部已触发 update()
+}
+
+void IconWidget::updateDpr() {
+    const qreal newDpr = devicePixelRatioF();
+    if(qFuzzyCompare(newDpr, dpr))
+        return;
+    dpr = newDpr;
+    loadIcon(); // 按新 dpr 重新走 @2x 分支并取缓存
+}
+
+void IconWidget::showEvent(QShowEvent *event) {
+    QWidget::showEvent(event);
+    // 构造时窗口尚未在屏上，devicePixelRatioF() 常为 1.0；
+    // 首次真正显示时才拿到正确 dpr
+    updateDpr();
+}
+
+bool IconWidget::event(QEvent *event) {
+    const bool handled = QWidget::event(event);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+    // 窗口跨屏拖动 / 系统缩放变化时 dpr 会变，按新 dpr 重新取图
+    if(event->type() == QEvent::DevicePixelRatioChange)
+        updateDpr();
+#endif
+    return handled;
 }
 
 QSize IconWidget::minimumSizeHint() const {
