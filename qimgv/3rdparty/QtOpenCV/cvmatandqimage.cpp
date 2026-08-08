@@ -52,9 +52,9 @@ QImage::Format findClosestFormat(QImage::Format formatHint) {
 cv::Mat reorderChannels(const cv::Mat &src, MatColorOrder from, MatColorOrder to) {
     if (from == to) return src; // 🚀 zero-copy
 
-    cv::Mat dst(src.rows, src.cols, src.type());
-
     if (src.channels() == 4) {
+        cv::Mat dst(src.rows, src.cols, src.type());
+
         if (from == MatColorOrder::ARGB && to == MatColorOrder::BGRA) {
             int map[] = {0,3, 1,2, 2,1, 3,0};
             cv::mixChannels(&src, 1, &dst, 1, map, 4);
@@ -73,12 +73,9 @@ cv::Mat reorderChannels(const cv::Mat &src, MatColorOrder from, MatColorOrder to
     }
 
     if (src.channels() == 3) {
-        if ((from == MatColorOrder::RGB && to == MatColorOrder::BGR) ||
-            (from == MatColorOrder::BGR && to == MatColorOrder::RGB)) {
-            cv::cvtColor(src, dst, cv::COLOR_RGB2BGR);
-    } else {
-        dst = src;
-    }
+        // 3 通道只有 RGB/BGR 两种顺序，from != to 即互转；一次预分配即可，去掉死分支
+        cv::Mat dst(src.rows, src.cols, src.type());
+        cv::cvtColor(src, dst, cv::COLOR_RGB2BGR);
         return dst;
     }
 
@@ -134,8 +131,10 @@ cv::Mat image2Mat(const QImage &img, int requiredType, MatColorOrder requiredOrd
     if (isSupportedFormat) {
         mat = image2Mat_shared(img, &srcOrder);
     } else {
+        // 转换得到的 QImage 生命周期止于本函数，而 image2Mat_shared 只是借用其缓冲区，
+        // 必须 clone 为自持数据，否则返回的 Mat 指向已释放内存（use-after-free）
         QImage src = img.convertToFormat(findClosestFormat(fmt));
-        mat = image2Mat_shared(src, &srcOrder);
+        mat = image2Mat_shared(src, &srcOrder).clone();
     }
     if (mat.empty()) return cv::Mat();
 
@@ -166,11 +165,25 @@ cv::Mat image2Mat(const QImage &img, int requiredType, MatColorOrder requiredOrd
                 } else if (srcOrder == MatColorOrder::RGBA) {
                     cv::cvtColor(mat, out, cv::COLOR_RGBA2GRAY);
                 } else {
-                    // ARGB: 先提取 RGB 再转灰度
-                    cv::Mat rgb(mat.rows, mat.cols, CV_MAKE_TYPE(mat.depth(), 3));
-                    int map[] = {1,0, 2,1, 3,2}; // ARGB -> RGB
-                    cv::mixChannels(&mat, 1, &rgb, 1, map, 3);
-                    cv::cvtColor(rgb, out, cv::COLOR_RGB2GRAY);
+                    // ARGB：单遍按 RGB 权重直接算灰度（跳过 alpha），替代先提取 RGB 再转灰度的两遍
+                    out = cv::Mat(mat.rows, mat.cols, CV_MAKE_TYPE(mat.depth(), 1));
+                    if (mat.depth() == CV_8U) {
+                        // 系数与 OpenCV 8U RGB2GRAY 一致：(4899R + 9617G + 1868B + 8192) >> 14
+                        for (int r = 0; r < mat.rows; ++r) {
+                            const uchar *s = mat.ptr<uchar>(r);
+                            uchar *d = out.ptr<uchar>(r);
+                            for (int c = 0; c < mat.cols; ++c) {
+                                d[c] = static_cast<uchar>((4899 * s[1] + 9617 * s[2] + 1868 * s[3] + 8192) >> 14);
+                                s += 4;
+                            }
+                        }
+                    } else {
+                        // 非 8U 回退：先提取 RGB 再转灰度
+                        cv::Mat rgb(mat.rows, mat.cols, CV_MAKE_TYPE(mat.depth(), 3));
+                        int map[] = {1,0, 2,1, 3,2}; // ARGB -> RGB
+                        cv::mixChannels(&mat, 1, &rgb, 1, map, 3);
+                        cv::cvtColor(rgb, out, cv::COLOR_RGB2GRAY);
+                    }
                 }
             }
         } else if (targetChannels == 3) {
@@ -214,29 +227,53 @@ cv::Mat image2Mat(const QImage &img, int requiredType, MatColorOrder requiredOrd
         } else if (targetChannels == 4) {
             // 转换为 4 通道 ARGB/RGBA/BGRA
             if (mat.channels() == 1) {
-                cv::Mat alpha(mat.rows, mat.cols, mat.type(), cv::Scalar(maxAlpha));
                 out = cv::Mat(mat.rows, mat.cols, CV_MAKE_TYPE(mat.type(), 4));
-                cv::Mat in[] = {alpha, mat};
-                if (requiredOrder == MatColorOrder::ARGB) {
-                    int map[] = {0,0, 1,1, 1,2, 1,3};
-                    cv::mixChannels(in, 2, &out, 1, map, 4);
+                if (requiredOrder == MatColorOrder::ARGB && mat.depth() == CV_8U) {
+                    // 单遍写入 {A,灰,灰,灰}，省去 alpha 全图填充 + mixChannels 的两遍开销
+                    const uchar a = static_cast<uchar>(maxAlpha);
+                    for (int r = 0; r < mat.rows; ++r) {
+                        const uchar *s = mat.ptr<uchar>(r);
+                        uchar *d = out.ptr<uchar>(r);
+                        for (int c = 0; c < mat.cols; ++c) {
+                            d[0] = a; d[1] = s[c]; d[2] = s[c]; d[3] = s[c];
+                            d += 4;
+                        }
+                    }
                 } else if (requiredOrder == MatColorOrder::RGBA) {
                     cv::cvtColor(mat, out, cv::COLOR_GRAY2RGBA);
-                } else {
+                } else if (requiredOrder == MatColorOrder::BGRA) {
                     cv::cvtColor(mat, out, cv::COLOR_GRAY2BGRA);
+                } else {
+                    // ARGB 非 8U 回退
+                    cv::Mat alpha(mat.rows, mat.cols, mat.type(), cv::Scalar(maxAlpha));
+                    cv::Mat in[] = {alpha, mat};
+                    int map[] = {0,0, 1,1, 1,2, 1,3};
+                    cv::mixChannels(in, 2, &out, 1, map, 4);
                 }
                 srcOrder = requiredOrder;
             } else if (mat.channels() == 3) {
-                cv::Mat alpha(mat.rows, mat.cols, mat.type(), cv::Scalar(maxAlpha));
                 out = cv::Mat(mat.rows, mat.cols, CV_MAKE_TYPE(mat.type(), 4));
-                cv::Mat in[] = {alpha, mat};
-                if (requiredOrder == MatColorOrder::ARGB) {
-                    int map[] = {0,0, 1,1, 2,2, 3,3};
-                    cv::mixChannels(in, 2, &out, 1, map, 4);
+                if (requiredOrder == MatColorOrder::ARGB && mat.depth() == CV_8U) {
+                    // 单遍写入 {A,R,G,B}，省去 alpha 全图填充 + mixChannels 的两遍开销
+                    const uchar a = static_cast<uchar>(maxAlpha);
+                    for (int r = 0; r < mat.rows; ++r) {
+                        const uchar *s = mat.ptr<uchar>(r);
+                        uchar *d = out.ptr<uchar>(r);
+                        for (int c = 0; c < mat.cols; ++c) {
+                            d[0] = a; d[1] = s[0]; d[2] = s[1]; d[3] = s[2];
+                            s += 3; d += 4;
+                        }
+                    }
                 } else if (requiredOrder == MatColorOrder::RGBA) {
                     cv::cvtColor(mat, out, cv::COLOR_RGB2RGBA);
-                } else {
+                } else if (requiredOrder == MatColorOrder::BGRA) {
                     cv::cvtColor(mat, out, cv::COLOR_RGB2BGRA);
+                } else {
+                    // ARGB 非 8U 回退
+                    cv::Mat alpha(mat.rows, mat.cols, mat.type(), cv::Scalar(maxAlpha));
+                    cv::Mat in[] = {alpha, mat};
+                    int map[] = {0,0, 1,1, 2,2, 3,3};
+                    cv::mixChannels(in, 2, &out, 1, map, 4);
                 }
                 srcOrder = requiredOrder;
             } else {
@@ -295,8 +332,8 @@ QImage mat2Image_shared(const cv::Mat &mat, QImage::Format formatHint) noexcept 
                matPtr);
 
     if (finalFormat == QImage::Format_Indexed8) {
-        QVector<QRgb> colorTable;
-        for (int i = 0; i < 256; ++i) colorTable.append(qRgb(i, i, i));
+        QVector<QRgb> colorTable(256);
+        for (int i = 0; i < 256; ++i) colorTable[i] = qRgb(i, i, i);
         img.setColorTable(colorTable);
     }
 
