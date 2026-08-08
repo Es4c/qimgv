@@ -3,9 +3,18 @@
 ActionManager *actionManager = nullptr;
 
 // 热路径：processEvent → invokeActionForShortcut → invokeAction
-// 优化：去掉 invokeAction 中冗余的 validateAction 调用
+// 优化：构造时预构建 action 名 → QMetaMethod 映射, 热路径 O(1) 查找并直接调用,
+//       去掉 toLatin1 分配、metaobject 逐方法字符串比较以及冗余的 validateAction 查询
 
 ActionManager::ActionManager(QObject *parent) : QObject(parent) {
+    // 预构建 action 名 → 信号方法的映射, 仅做一次
+    const QMetaObject *mo = metaObject();
+    m_methodCache.reserve(static_cast<qsizetype>(mo->methodCount()));
+    for(int i = 0; i < mo->methodCount(); ++i) {
+        const QMetaMethod m = mo->method(i);
+        if(m.methodType() == QMetaMethod::Signal)
+            m_methodCache.insert(QString::fromLatin1(m.name()), m);
+    }
 }
 
 ActionManager::~ActionManager() = default;  // 使用 = default 定义默认析构
@@ -113,7 +122,7 @@ void ActionManager::rebuildActionsToShortcutsIndex() {
 void ActionManager::addShortcut(const QString &keys, const QString &action) {
     if(validateAction(action) != ActionType::ACTION_INVALID) {
         shortcuts.insert(keys, action);
-        m_actionsToShortcuts.insert(action, keys);  // O(log n) 同步反向索引
+        m_actionsToShortcuts.insert(action, keys);  // 同步反向索引
     }
 }
 
@@ -130,7 +139,7 @@ QStringList ActionManager::actionList() const {
     return appActions->getList();
 }
 
-const QMap<QString, QString>& ActionManager::allShortcuts() const {
+const QHash<QString, QString>& ActionManager::allShortcuts() const {
     return shortcuts;
 }
 
@@ -152,10 +161,7 @@ void ActionManager::removeAllShortcuts(const QString &actionName) {
 }
 
 QString ActionManager::keyForNativeScancode(quint32 scanCode) const {
-    if(inputMap->keys().contains(scanCode)) {
-        return inputMap->keys()[scanCode];
-    }
-    return "";
+    return inputMap->keys().value(scanCode);
 }
 
 void ActionManager::resetDefaults() {
@@ -188,7 +194,7 @@ void ActionManager::adjustFromVersion(const QVersionNumber &lastVer) {  // 改�
     
     if(lastVer < QVersionNumber(1, 0, 1)) {
         qDebug() << "[actionManager]: swapping WheelUp/WheelDown";
-        QMap<QString, QString> swapped;
+        QHash<QString, QString> swapped;
         for(auto i = shortcuts.constBegin(); i != shortcuts.constEnd(); ++i) {
             QString key = i.key();
             if(key.contains("WheelUp"))
@@ -235,24 +241,26 @@ const QList<QString> ActionManager::shortcutsForAction(const QString &action) co
 }
 
 bool ActionManager::invokeAction(const QString &actionName) {
-    ActionType type = validateAction(actionName);
-    if(type == ActionType::ACTION_NORMAL) {
-        QByteArray actionBytes = actionName.toLatin1();
-        QMetaObject::invokeMethod(this, actionBytes.constData(), Qt::DirectConnection);
-        return true;
+    auto it = m_methodCache.constFind(actionName);
+    if(it != m_methodCache.constEnd()) {
+        return it->invoke(this, Qt::DirectConnection);
     }
-    if(type == ActionType::ACTION_SCRIPT) {
-        QString scriptName = actionName;
-        scriptName.remove(0, 2);
-        emit runScript(scriptName);
-        return true;
+    if(actionName.startsWith("s:")) {
+        QString scriptName = actionName.mid(2);
+        if(scriptManager->scriptExists(scriptName)) {
+            emit runScript(scriptName);
+            return true;
+        }
     }
     return false;
 }
 
 bool ActionManager::invokeActionForShortcut(const QString &shortcut) {
-    if(!shortcut.isEmpty() && shortcuts.contains(shortcut)) {
-        return invokeAction(shortcuts[shortcut]);
+    if(shortcut.isEmpty())
+        return false;
+    auto it = shortcuts.constFind(shortcut);
+    if(it != shortcuts.constEnd()) {
+        return invokeAction(it.value());
     }
     return false;
 }

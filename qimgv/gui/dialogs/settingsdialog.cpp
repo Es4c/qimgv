@@ -413,9 +413,9 @@ void SettingsDialog::readShortcuts() {
     ui->shortcutsTableWidget->clearContents();
     ui->shortcutsTableWidget->setRowCount(0);
     shortcutToRowMap.clear();
-    const QMap<QString, QString> &shortcuts = actionManager->allShortcuts();
+    const QHash<QString, QString> &shortcuts = actionManager->allShortcuts();
     shortcutToRowMap.reserve(shortcuts.size());
-    QMapIterator<QString, QString> i(shortcuts);
+    QHashIterator<QString, QString> i(shortcuts);
     while(i.hasNext()) {
         i.next();
         addShortcutToTable(i.value(), i.key());

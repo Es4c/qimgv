@@ -5,6 +5,8 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QMap>
+#include <QHash>
+#include <QMetaMethod>
 #include <QDebug>
 #include <QStringList>
 #include <memory>
@@ -36,7 +38,7 @@ public:
     const QString shortcutForAction(const QString &action) const;
     const QList<QString> shortcutsForAction(const QString &action) const;
     QStringList actionList() const;
-    const QMap<QString, QString>& allShortcuts() const;
+    const QHash<QString, QString>& allShortcuts() const;
     
     void removeShortcut(const QString &keys);
     void removeAllShortcuts();
@@ -62,9 +64,11 @@ private:
     bool invokeActionForShortcut(const QString &shortcut);
     ActionType validateAction(const QString &actionName) const;
     
-    QMap<QString, QString> defaults;
-    QMap<QString, QString> shortcuts;
+    QHash<QString, QString> defaults;
+    QHash<QString, QString> shortcuts;
     QMultiMap<QString, QString> m_actionsToShortcuts;  // 反向索引: action → shortcuts
+
+    QHash<QString, QMetaMethod> m_methodCache;  // action 名 → 信号方法, 避免热路径字符串查找
 
     void rebuildActionsToShortcutsIndex();
 

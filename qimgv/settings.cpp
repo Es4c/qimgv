@@ -704,7 +704,7 @@ void Settings::sendChangeNotification() {
     emit settingsChanged();
 }
 //------------------------------------------------------------------------------
-void Settings::readShortcuts(QMap<QString, QString> &shortcuts) {
+void Settings::readShortcuts(QHash<QString, QString> &shortcuts) {
     if (mShortcutsCacheValid) {
         shortcuts = mCachedShortcuts;
         return;
@@ -727,9 +727,9 @@ void Settings::readShortcuts(QMap<QString, QString> &shortcuts) {
     mShortcutsCacheValid = true;
 }
 
-void Settings::saveShortcuts(const QMap<QString, QString> &shortcuts) {
+void Settings::saveShortcuts(const QHash<QString, QString> &shortcuts) {
     settingsConf->beginGroup("Controls");
-    QMapIterator<QString, QString> i(shortcuts);
+    QHashIterator<QString, QString> i(shortcuts);
     QStringList out;
     while(i.hasNext()) {
         i.next();

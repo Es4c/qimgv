@@ -111,8 +111,8 @@ public:
     void setPanelPosition(PanelPosition);
     bool loopSlideshow();
     void setLoopSlideshow(bool mode);
-    void readShortcuts(QMap<QString, QString> &shortcuts);
-    void saveShortcuts(const QMap<QString, QString> &shortcuts);
+    void readShortcuts(QHash<QString, QString> &shortcuts);
+    void saveShortcuts(const QHash<QString, QString> &shortcuts);
     bool panelEnabled();
     void setPanelEnabled(bool mode);
     int lastDisplay();
@@ -329,7 +329,7 @@ private:
     mutable bool mBookmarksCacheValid;
     
     // 缓存快捷键和脚本
-    mutable QMap<QString, QString> mCachedShortcuts;
+    mutable QHash<QString, QString> mCachedShortcuts;
     mutable bool mShortcutsCacheValid;
     mutable QHash<QString, Script> mCachedScripts;
     mutable bool mScriptsCacheValid;
