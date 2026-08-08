@@ -18,6 +18,8 @@ public:
     ~MpvWidget() override;
 
     void command(const QVariant& params);
+    void command(const char *cmd);
+    void command(const char *const args[]);
     void setOption(const QString &name, const QVariant &value);
     void setProperty(const QString& name, const QVariant& value);
     [[nodiscard]] QVariant getProperty(const QString& name) const;
@@ -39,6 +41,8 @@ private slots:
 
 private:
     void handle_mpv_event(mpv_event *event);
+    static void wakeup(void *ctx);
     
     mpv_handle *mpv;
+    int m_volume;
 };

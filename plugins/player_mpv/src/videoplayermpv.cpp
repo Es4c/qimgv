@@ -1,9 +1,7 @@
 #include "videoplayermpv.h"
 #include "mpvwidget.h"
-#include <QPushButton>
-#include <QSlider>
 #include <QLayout>
-#include <QFileDialog>
+#include <string>
 
 // TODO: window flashes white when opening a video (straight from file manager)
 VideoPlayerMpv::VideoPlayerMpv(QWidget *parent) : VideoPlayer(parent), m_paused(false) {
@@ -19,8 +17,6 @@ VideoPlayerMpv::VideoPlayerMpv(QWidget *parent) : VideoPlayer(parent), m_paused(
     setFocusPolicy(Qt::NoFocus);
     m_mpv->setFocusPolicy(Qt::NoFocus);
 
-    readSettings();
-    //connect(settings, SIGNAL(settingsChanged()), this, SLOT(readSettings()));
     connect(m_mpv, SIGNAL(durationChanged(int)), this, SIGNAL(durationChanged(int)));
     connect(m_mpv, SIGNAL(positionChanged(int)), this, SIGNAL(positionChanged(int)));
     connect(m_mpv, SIGNAL(videoPaused(bool)), this, SIGNAL(videoPaused(bool)));
@@ -30,19 +26,24 @@ VideoPlayerMpv::VideoPlayerMpv(QWidget *parent) : VideoPlayer(parent), m_paused(
 bool VideoPlayerMpv::showVideo(const QString &file) {
     if(file.isEmpty())
         return false;
-    m_mpv->command(QStringList() << "loadfile" << file);
+    // 直接走 argv 命令，避免 QVariant->mpv_node 序列化
+    const QByteArray path = file.toUtf8();
+    const char *args[] = {"loadfile", path.constData(), nullptr};
+    m_mpv->command(args);
     setPaused(false);
     return true;
 }
 
 void VideoPlayerMpv::seek(int pos) {
-    m_mpv->command(QVariantList() << "seek" << pos << "absolute");
-    //qDebug() << "seek(): " << pos << " sec";
+    const std::string s = std::to_string(pos);
+    const char *args[] = {"seek", s.c_str(), "absolute", nullptr};
+    m_mpv->command(args);
 }
 
 void VideoPlayerMpv::seekRelative(int pos) {
-    m_mpv->command(QVariantList() << "seek" << pos << "relative");
-    //qDebug() << "seekRelative(): " << pos << " sec";
+    const std::string s = std::to_string(pos);
+    const char *args[] = {"seek", s.c_str(), "relative", nullptr};
+    m_mpv->command(args);
 }
 
 void VideoPlayerMpv::pauseResume() {
@@ -50,15 +51,15 @@ void VideoPlayerMpv::pauseResume() {
 }
 
 void VideoPlayerMpv::frameStep() {
-    m_mpv->command(QVariantList() << "frame-step");
+    m_mpv->command("frame-step");
 }
 
 void VideoPlayerMpv::frameStepBack() {
-    m_mpv->command(QVariantList() << "frame-back-step");
+    m_mpv->command("frame-back-step");
 }
 
 void VideoPlayerMpv::stop() {
-    m_mpv->command(QVariantList() << "stop");
+    m_mpv->command("stop");
 }
 
 void VideoPlayerMpv::setPaused(bool mode) {
@@ -97,15 +98,6 @@ void VideoPlayerMpv::setVideoUnscaled(bool mode) {
         m_mpv->setOption("video-unscaled", "no");
 }
 
-void VideoPlayerMpv::paintEvent(QPaintEvent *event) {
-    Q_UNUSED(event)
-}
-
-void VideoPlayerMpv::readSettings() {
-    //setMuted(!settings->playVideoSounds());
-    //setVideoUnscaled(!settings->expandImage());
-}
-
 void VideoPlayerMpv::mousePressEvent(QMouseEvent *event) {
     if(event->button() == Qt::MiddleButton && event->type() != QEvent::MouseButtonDblClick) {
         event->accept();
@@ -124,14 +116,6 @@ void VideoPlayerMpv::mouseMoveEvent(QMouseEvent *event) {
 void VideoPlayerMpv::mouseReleaseEvent(QMouseEvent *event) {
     QWidget::mouseReleaseEvent(event);
     event->ignore();
-}
-
-void VideoPlayerMpv::show() {
-    QWidget::show();
-}
-
-void VideoPlayerMpv::hide() {
-    QWidget::hide();
 }
 
 void VideoPlayerMpv::setLoopPlayback(bool mode) {

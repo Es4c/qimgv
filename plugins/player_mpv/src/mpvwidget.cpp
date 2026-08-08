@@ -2,8 +2,10 @@
 #include <stdexcept>
 #include <array>
 
-static void wakeup(void *ctx) {
-    QMetaObject::invokeMethod(static_cast<MpvWidget*>(ctx), "on_mpv_events", Qt::QueuedConnection);
+// mpv 线程回调：用 functor 形式入队，避免每次按名字查元方法。
+void MpvWidget::wakeup(void *ctx) {
+    MpvWidget *self = static_cast<MpvWidget*>(ctx);
+    QMetaObject::invokeMethod(self, [self] { self->on_mpv_events(); }, Qt::QueuedConnection);
 }
 
 static void *get_proc_address(void *ctx, const char *name) noexcept {
@@ -41,9 +43,10 @@ MpvWidget::MpvWidget(QWidget *parent, Qt::WindowFlags f)
     // Unmute
     setMuted(false);
 
-    mpv_observe_property(mpv, 0, "duration", MPV_FORMAT_DOUBLE);
-    mpv_observe_property(mpv, 0, "time-pos", MPV_FORMAT_DOUBLE);
-    mpv_observe_property(mpv, 0, "pause", MPV_FORMAT_FLAG);
+    // reply_userdata 用于事件分发时直接区分属性，避免每次 strcmp
+    mpv_observe_property(mpv, 1, "duration", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(mpv, 2, "time-pos", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(mpv, 3, "pause", MPV_FORMAT_FLAG);
     mpv_set_wakeup_callback(mpv, wakeup, this);
 }
 
@@ -56,6 +59,14 @@ MpvWidget::~MpvWidget() {
 
 void MpvWidget::command(const QVariant& params) {
     mpv::qt::command(mpv, params);
+}
+
+void MpvWidget::command(const char *cmd) {
+    mpv_command_string(mpv, cmd);
+}
+
+void MpvWidget::command(const char *const args[]) {
+    mpv_command(mpv, args);
 }
 
 void MpvWidget::setProperty(const QString& name, const QVariant& value) {
@@ -84,14 +95,14 @@ void MpvWidget::initializeGL() {
 }
 
 void MpvWidget::paintGL() {
-    mpv_opengl_fbo mpfbo{static_cast<int>(defaultFramebufferObject()), width(), height(), 0};
-    int flip_y{1};
-
-    std::array<mpv_render_param, 3> params{
+    static mpv_opengl_fbo mpfbo{0, 0, 0, 0};
+    static constexpr int flip_y{1};
+    static std::array<mpv_render_param, 3> params{
         mpv_render_param{MPV_RENDER_PARAM_OPENGL_FBO, &mpfbo},
         mpv_render_param{MPV_RENDER_PARAM_FLIP_Y, &flip_y},
         mpv_render_param{MPV_RENDER_PARAM_INVALID, nullptr}
     };
+    mpfbo = mpv_opengl_fbo{static_cast<int>(defaultFramebufferObject()), width(), height(), 0};
     // See render_gl.h on what OpenGL environment mpv expects, and
     // other API details.
     mpv_render_context_render(mpv_gl, params.data());
@@ -109,29 +120,27 @@ void MpvWidget::on_mpv_events() {
 }
 
 void MpvWidget::handle_mpv_event(mpv_event *event) {
-    switch (event->event_id) {
-    case MPV_EVENT_PROPERTY_CHANGE: {
-        mpv_event_property *prop = reinterpret_cast<mpv_event_property*>(event->data);
-        if(strcmp(prop->name, "time-pos") == 0) {
-            if (prop->format == MPV_FORMAT_DOUBLE) {
-                double time = *reinterpret_cast<double*>(prop->data);
-                emit positionChanged(static_cast<int>(time));
-            }
-        } else if(strcmp(prop->name, "duration") == 0) {
-            if(prop->format == MPV_FORMAT_DOUBLE) {
-                double time = *reinterpret_cast<double*>(prop->data);
-                emit durationChanged(static_cast<int>(time));
-            } else if(prop->format == MPV_FORMAT_NONE) {
-                emit playbackFinished();
-            }
-        } else if(strcmp(prop->name, "pause") == 0) {
-            int mode = *reinterpret_cast<int*>(prop->data);
-            emit videoPaused(mode == 1);
-        }
+    if (event->event_id != MPV_EVENT_PROPERTY_CHANGE)
+        return;
+    // 按 reply_userdata 直接分发，避免逐属性 strcmp
+    mpv_event_property *prop = reinterpret_cast<mpv_event_property*>(event->data);
+    switch (event->reply_userdata) {
+    case 2: // time-pos
+        if (prop->format == MPV_FORMAT_DOUBLE)
+            emit positionChanged(static_cast<int>(*reinterpret_cast<double*>(prop->data)));
         break;
-    }
-    default: ;
-        // Ignore uninteresting or unknown events.
+    case 1: // duration
+        if (prop->format == MPV_FORMAT_DOUBLE)
+            emit durationChanged(static_cast<int>(*reinterpret_cast<double*>(prop->data)));
+        else if (prop->format == MPV_FORMAT_NONE)
+            emit playbackFinished();
+        break;
+    case 3: // pause
+        if (prop->format == MPV_FORMAT_FLAG)
+            emit videoPaused(*reinterpret_cast<int*>(prop->data) == 1);
+        break;
+    default:
+        break; // 忽略不感兴趣的事件
     }
 }
 
@@ -155,7 +164,26 @@ void MpvWidget::maybeUpdate() {
 }
 
 void MpvWidget::on_update(void *ctx) {
-    QMetaObject::invokeMethod(static_cast<MpvWidget*>(ctx), "maybeUpdate");
+    // 每帧渲染回调：functor 入队，避免按名字查元方法
+    MpvWidget *self = static_cast<MpvWidget*>(ctx);
+    QMetaObject::invokeMethod(self, [self] { self->maybeUpdate(); });
+}
+
+void MpvWidget::showEvent(QShowEvent *event) {
+    QOpenGLWidget::showEvent(event);
+    updateDevicePixelRatio();
+}
+
+void MpvWidget::resizeEvent(QResizeEvent *event) {
+    QOpenGLWidget::resizeEvent(event);
+    updateDevicePixelRatio();
+}
+
+void MpvWidget::changeEvent(QEvent *event) {
+    QOpenGLWidget::changeEvent(event);
+    // 跨屏移动时高 DPI 比例会变化，需刷新缓存
+    if (event->type() == QEvent::ScreenChangeInternal)
+        updateDevicePixelRatio();
 }
 
 void MpvWidget::setMuted(bool mode) {
@@ -166,7 +194,7 @@ void MpvWidget::setMuted(bool mode) {
 }
 
 bool MpvWidget::muted() const {
-    return mpv::qt::get_property(mpv, "mute").toBool();
+    return mpv::qt::get_property_flag(mpv, "mute");
 }
 
 int MpvWidget::volume() const {

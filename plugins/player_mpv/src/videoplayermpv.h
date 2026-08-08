@@ -32,22 +32,15 @@ public slots:
     void volumeUp() override;
     void volumeDown() override;
     void setVolume(int vol) override;
-    void show() override;
-    void hide() override;
     void setLoopPlayback(bool mode) override;
 
 protected:
-    void paintEvent(QPaintEvent *event) override;
-
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
 
 signals:
     void playbackFinished();
-
-private slots:
-    void readSettings();
 
  private:
     MpvWidget *m_mpv;

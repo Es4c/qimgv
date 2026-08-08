@@ -32,22 +32,15 @@ public slots:
     void volumeUp();
     void volumeDown();
     void setVolume(int vol);
-    void show();
-    void hide();
     void setLoopPlayback(bool mode);
 
 protected:
-    void paintEvent(QPaintEvent *event);
-
     void mousePressEvent(QMouseEvent *event);
     void mouseMoveEvent(QMouseEvent *event);
     void mouseReleaseEvent(QMouseEvent *event);
 
 signals:
     void playbackFinished();
-
-private slots:
-    void readSettings();
 
 private:
     MpvWidget *m_mpv;

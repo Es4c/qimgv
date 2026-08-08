@@ -245,7 +245,8 @@ static inline bool is_error(const QVariant &v)
 static inline QVariant get_property(mpv_handle *ctx, const QString &name)
 {
     mpv_node node;
-    int err = mpv_get_property(ctx, name.toUtf8().data(), MPV_FORMAT_NODE, &node);
+    const QByteArray n = name.toUtf8();
+    int err = mpv_get_property(ctx, n.constData(), MPV_FORMAT_NODE, &node);
     if (err < 0)
         return QVariant::fromValue(ErrorReturn(err));
     node_autofree f(&node);
@@ -253,15 +254,58 @@ static inline QVariant get_property(mpv_handle *ctx, const QString &name)
 }
 
 /**
- * Set the given property as mpv_node converted from the QVariant argument.
+ * 快速读取布尔属性（MPV_FORMAT_FLAG），失败时返回 false。
+ */
+static inline bool get_property_flag(mpv_handle *ctx, const QString &name)
+{
+    int flag = 0;
+    if (mpv_get_property(ctx, name.toUtf8().constData(), MPV_FORMAT_FLAG, &flag) < 0)
+        return false;
+    return flag != 0;
+}
+
+/**
+ * 快速读取整型属性（MPV_FORMAT_INT64），失败时返回 0。
+ */
+static inline int get_property_int(mpv_handle *ctx, const QString &name)
+{
+    int64_t i = 0;
+    if (mpv_get_property(ctx, name.toUtf8().constData(), MPV_FORMAT_INT64, &i) < 0)
+        return 0;
+    return static_cast<int>(i);
+}
+
+/**
+ * 设置属性：标量类型走原生 mpv 格式（避免 node 树分配），复杂类型退回 node 路径。
  *
  * @return mpv error code (<0 on error, >= 0 on success)
  */
 static inline int set_property(mpv_handle *ctx, const QString &name,
                                        const QVariant &v)
 {
+    const QByteArray n = name.toUtf8();
+    const int type = v.userType();
+    if (type == QMetaType::QString) {
+        // MPV_FORMAT_STRING 需要 char**（指向字符串的指针）
+        const QByteArray b = v.toString().toUtf8();
+        const char *str = b.constData();
+        return mpv_set_property(ctx, n.constData(), MPV_FORMAT_STRING, &str);
+    }
+    if (type == QMetaType::Bool) {
+        int flag = v.toBool() ? 1 : 0;
+        return mpv_set_property(ctx, n.constData(), MPV_FORMAT_FLAG, &flag);
+    }
+    if (type == QMetaType::Int || type == QMetaType::LongLong ||
+        type == QMetaType::UInt || type == QMetaType::ULongLong) {
+        int64_t i = v.toLongLong();
+        return mpv_set_property(ctx, n.constData(), MPV_FORMAT_INT64, &i);
+    }
+    if (type == QMetaType::Double) {
+        double d = v.toDouble();
+        return mpv_set_property(ctx, n.constData(), MPV_FORMAT_DOUBLE, &d);
+    }
     node_builder node(v);
-    return mpv_set_property(ctx, name.toUtf8().data(), MPV_FORMAT_NODE, node.node());
+    return mpv_set_property(ctx, n.constData(), MPV_FORMAT_NODE, node.node());
 }
 
 /**

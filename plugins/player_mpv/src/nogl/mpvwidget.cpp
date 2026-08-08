@@ -1,12 +1,14 @@
 #include "mpvwidget.h"
 #include <stdexcept>
 
-static void wakeup(void *ctx) noexcept {
-    QMetaObject::invokeMethod(static_cast<MpvWidget*>(ctx), "on_mpv_events", Qt::QueuedConnection);       
+// mpv 线程回调：用 functor 形式入队，避免每次按名字查元方法。
+void MpvWidget::wakeup(void *ctx) {
+    MpvWidget *self = static_cast<MpvWidget*>(ctx);
+    QMetaObject::invokeMethod(self, [self] { self->on_mpv_events(); }, Qt::QueuedConnection);
 }
 
 MpvWidget::MpvWidget(QWidget *parent, Qt::WindowFlags f)
-    : QWidget(parent, f)
+    : QWidget(parent, f), m_volume(100)
 {
     mpv = mpv_create();
     if(!mpv)
@@ -32,9 +34,10 @@ MpvWidget::MpvWidget(QWidget *parent, Qt::WindowFlags f)
     // Unmute
     setMuted(false);
     
-    mpv_observe_property(mpv, 0, "duration", MPV_FORMAT_DOUBLE);
-    mpv_observe_property(mpv, 0, "time-pos", MPV_FORMAT_DOUBLE);
-    mpv_observe_property(mpv, 0, "pause", MPV_FORMAT_FLAG);
+    // reply_userdata 用于事件分发时直接区分属性，避免每次 strcmp
+    mpv_observe_property(mpv, 1, "duration", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(mpv, 2, "time-pos", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(mpv, 3, "pause", MPV_FORMAT_FLAG);
     mpv_set_wakeup_callback(mpv, wakeup, this);
     
     if (mpv_initialize(mpv) < 0)
@@ -47,6 +50,14 @@ MpvWidget::~MpvWidget() {
 
 void MpvWidget::command(const QVariant& params) {
     mpv::qt::command(mpv, params);
+}
+
+void MpvWidget::command(const char *cmd) {
+    mpv_command_string(mpv, cmd);
+}
+
+void MpvWidget::command(const char *const args[]) {
+    mpv_command(mpv, args);
 }
 
 void MpvWidget::setProperty(const QString& name, const QVariant& value) {
@@ -73,29 +84,27 @@ void MpvWidget::on_mpv_events() {
 }
 
 void MpvWidget::handle_mpv_event(mpv_event *event) {
-    switch (event->event_id) {
-    case MPV_EVENT_PROPERTY_CHANGE: {
-        mpv_event_property *prop = reinterpret_cast<mpv_event_property*>(event->data);
-        if(strcmp(prop->name, "time-pos") == 0) {
-            if (prop->format == MPV_FORMAT_DOUBLE) {
-                double time = *reinterpret_cast<double*>(prop->data);
-                emit positionChanged(static_cast<int>(time));
-            }
-        } else if(strcmp(prop->name, "duration") == 0) {
-            if(prop->format == MPV_FORMAT_DOUBLE) {
-                double time = *reinterpret_cast<double*>(prop->data);
-                emit durationChanged(static_cast<int>(time));
-            } else if(prop->format == MPV_FORMAT_NONE) {
-                emit playbackFinished();
-            }
-        } else if(strcmp(prop->name, "pause") == 0) {
-            int mode = *reinterpret_cast<int*>(prop->data);
-            emit videoPaused(mode == 1);
-        }
+    if (event->event_id != MPV_EVENT_PROPERTY_CHANGE)
+        return;
+    // 按 reply_userdata 直接分发，避免逐属性 strcmp
+    mpv_event_property *prop = reinterpret_cast<mpv_event_property*>(event->data);
+    switch (event->reply_userdata) {
+    case 2: // time-pos
+        if (prop->format == MPV_FORMAT_DOUBLE)
+            emit positionChanged(static_cast<int>(*reinterpret_cast<double*>(prop->data)));
         break;
-    }
-    default: ;
-        // Ignore uninteresting or unknown events.
+    case 1: // duration
+        if (prop->format == MPV_FORMAT_DOUBLE)
+            emit durationChanged(static_cast<int>(*reinterpret_cast<double*>(prop->data)));
+        else if (prop->format == MPV_FORMAT_NONE)
+            emit playbackFinished();
+        break;
+    case 3: // pause
+        if (prop->format == MPV_FORMAT_FLAG)
+            emit videoPaused(*reinterpret_cast<int*>(prop->data) == 1);
+        break;
+    default:
+        break; // 忽略不感兴趣的事件
     }
 }
 
@@ -107,15 +116,16 @@ void MpvWidget::setMuted(bool mode) {
 }
 
 bool MpvWidget::muted() const {
-    return mpv::qt::get_property(mpv, "mute").toBool();
+    return mpv::qt::get_property_flag(mpv, "mute");
 }
 
 int MpvWidget::volume() const {
-    return mpv::qt::get_property(mpv, "volume").toInt();
+    return m_volume;
 }
 
 void MpvWidget::setVolume(int vol) {
     vol = qBound(0, vol, 100);
+    m_volume = vol;
     mpv::qt::set_property(mpv, "volume", vol);
 }
 
