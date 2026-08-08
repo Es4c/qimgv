@@ -1,7 +1,15 @@
 #include "croppanel.h"
 #include "ui_croppanel.h"
+#include "gui/overlays/cropoverlay.h"
 #include <QSignalBlocker>
 #include <QGuiApplication>
+#include <QScreen>
+#include <QComboBox>
+#include <QStyledItemDelegate>
+#include <QAbstractItemView>
+#include <QTimer>
+#include <QKeyEvent>
+#include <QWheelEvent>
 
 CropPanel::CropPanel(CropOverlay *_overlay, QWidget *parent) :
     SidePanelWidget(parent),
@@ -9,6 +17,7 @@ CropPanel::CropPanel(CropOverlay *_overlay, QWidget *parent) :
     overlay(_overlay)
 {
     ui->setupUi(this);
+    setAttribute(Qt::WA_StyledBackground, true);
     setFocusPolicy(Qt::NoFocus);
 
     // 下拉框美化
@@ -42,6 +51,13 @@ CropPanel::CropPanel(CropOverlay *_overlay, QWidget *parent) :
     connect(ui->posX, &QSpinBox::valueChanged, this, syncSelection);
     connect(ui->posY, &QSpinBox::valueChanged, this, syncSelection);
 
+    // 合并连续输入：SpinBox 手输/连按方向键时会高频触发 valueChanged，
+    // 用单发定时器节流，只在输入停顿后一次性同步到 overlay
+    selectionSyncTimer = std::make_unique<QTimer>(this);
+    selectionSyncTimer->setSingleShot(true);
+    selectionSyncTimer->setInterval(50);
+    connect(selectionSyncTimer.get(), &QTimer::timeout, this, &CropPanel::flushSelectionSync);
+
     // 比例调节同步
     auto syncARChange = &CropPanel::onAspectRatioChange;
     connect(ui->ARX, &QDoubleSpinBox::valueChanged, this, syncARChange);
@@ -66,8 +82,11 @@ void CropPanel::setImageRealSize(QSize sz) {
     ui->height->setMaximum(sz.height());
     realSize = sz;
 
-    // 重置为自由模式（Index 0），触发 onAspectRatioSelected 更新
-    ui->ARcomboBox->setCurrentIndex(0);
+    // 重置为自由模式（Index 0）：阻塞信号避免 setCurrentIndex 与显式调用双重触发
+    {
+        const QSignalBlocker blocker(ui->ARcomboBox);
+        ui->ARcomboBox->setCurrentIndex(0);
+    }
     onAspectRatioSelected();
 }
 
@@ -79,22 +98,31 @@ void CropPanel::doCropDefaultAction() {
 }
 
 void CropPanel::doCrop() {
-    QRect target(ui->posX->value(), ui->posY->value(), ui->width->value(), ui->height->value());
-    if (target.isValid() && target.size() != realSize)
-        emit crop(target);
-    else
-        emit cancel();
+    doCropInternal(false);
 }
 
 void CropPanel::doCropSave() {
+    doCropInternal(true);
+}
+
+void CropPanel::doCropInternal(bool save) {
+    selectionSyncTimer->stop();
     QRect target(ui->posX->value(), ui->posY->value(), ui->width->value(), ui->height->value());
-    if (target.isValid() && target.size() != realSize)
-        emit cropAndSave(target);
-    else
+    if (target.isValid() && target.size() != realSize) {
+        if (save)
+            emit cropAndSave(target);
+        else
+            emit crop(target);
+    } else {
         emit cancel();
+    }
 }
 
 void CropPanel::onSelectionChange() {
+    selectionSyncTimer->start();
+}
+
+void CropPanel::flushSelectionSync() {
     emit selectionChanged(QRect(ui->posX->value(), ui->posY->value(),
                                 ui->width->value(), ui->height->value()));
 }
@@ -167,7 +195,7 @@ void CropPanel::setFocusCropSaveBtn() {
     ui->cropButton->setHighlighted(false);
 }
 
-void CropPanel::onSelectionOutsideChange(QRect rect) {
+void CropPanel::onSelectionOutsideChange(const QRect& rect) {
     // 批量阻塞信号
     const QSignalBlocker b1(ui->width);
     const QSignalBlocker b2(ui->height);
@@ -178,13 +206,6 @@ void CropPanel::onSelectionOutsideChange(QRect rect) {
     ui->height->setValue(rect.height());
     ui->posX->setValue(rect.left());
     ui->posY->setValue(rect.top());
-}
-
-void CropPanel::paintEvent(QPaintEvent *) {
-    QStyleOption opt;
-    opt.initFrom(this);
-    QPainter p(this);
-    style()->drawPrimitive(QStyle::PE_Widget, &opt, &p, this);
 }
 
 void CropPanel::show() {

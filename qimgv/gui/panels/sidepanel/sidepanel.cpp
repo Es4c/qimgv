@@ -6,6 +6,7 @@ SidePanel::SidePanel(QWidget *parent) :
     ui(new Ui::SidePanel),
     mWidget(nullptr)
 {
+    setAttribute(Qt::WA_StyledBackground, true);
     ui->setupUi(this);
     this->setObjectName("SidePanel");
     this->hide();
@@ -16,6 +17,10 @@ SidePanel::~SidePanel() {
 }
 
 void SidePanel::setWidget(SidePanelWidget* w) {
+    if(mWidget == w) {
+        w->show();
+        return;
+    }
     if(mWidget) {
         mWidget->hide();
         ui->layout->removeWidget(mWidget);
@@ -40,7 +45,4 @@ void SidePanel::hide() {
         mWidget->hide();
     }
     QWidget::hide();
-}
-
-void SidePanel::paintEvent(QPaintEvent *) {
 }

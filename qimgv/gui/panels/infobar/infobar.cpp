@@ -1,10 +1,12 @@
 #include "infobar.h"
 #include "ui_infobar.h"
+#include <QWheelEvent>
 
 InfoBar::InfoBar(QWidget *parent) :
     QWidget(parent),
     ui(new Ui::InfoBar)
 {
+    setAttribute(Qt::WA_StyledBackground, true);
     ui->setupUi(this);
     ui->path->setText("No file opened.");
 }
@@ -21,12 +23,4 @@ void InfoBar::setInfo(const QString& position, const QString& fileName, const QS
 
 void InfoBar::wheelEvent(QWheelEvent *event) {
     event->accept();
-}
-
-void InfoBar::paintEvent(QPaintEvent *event) {
-    Q_UNUSED(event)
-    QStyleOption opt;
-    opt.initFrom(this);
-    QPainter p(this);
-    style()->drawPrimitive(QStyle::PE_Widget, &opt, &p, this);
 }

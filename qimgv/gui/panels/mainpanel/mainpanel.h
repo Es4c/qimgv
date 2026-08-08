@@ -17,12 +17,9 @@ void readSettings();
 signals:
 void pinned(bool mode);
 private slots:
-void onPinClicked();
+void onPinClicked(bool checked);
 private:
 QVBoxLayout *buttonsLayout;
 QWidget buttonsWidget;
     ActionButton *openButton, *settingsButton, *exitButton, *pinButton;
-private:
-// 非虚辅助方法，用于在构造期间安全计算尺寸
-QSize calculateSizeHint() const;
 };

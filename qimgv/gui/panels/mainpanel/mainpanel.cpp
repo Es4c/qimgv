@@ -34,11 +34,9 @@ layout()->addWidget(&buttonsWidget);
 
 MainPanel::~MainPanel() = default;
 
-void MainPanel::onPinClicked() {
-bool mode = !settings->panelPinned();
-pinButton->setChecked(mode);
-settings->setPanelPinned(mode);
-emit pinned(mode);
+void MainPanel::onPinClicked(bool checked) {
+    settings->setPanelPinned(checked);
+    emit pinned(checked);
 }
 
 void MainPanel::setPosition(PanelPosition p) {
@@ -72,34 +70,24 @@ void MainPanel::setExitButtonEnabled(bool mode) {
 exitButton->setHidden(!mode);
 }
 
-// 非虚辅助方法，用于安全计算尺寸（可在构造期间调用）
-QSize MainPanel::calculateSizeHint() const {
-return QSize(0, 0);
-}
-
-// 注意：实现文件中不要加 override
 QSize MainPanel::sizeHint() const {
-return calculateSizeHint();
+    // 按钮列/行的固有尺寸 + 面板自身布局边距，供布局在未固定尺寸时使用
+    return layout() ? layout()->sizeHint() : buttonsWidget.sizeHint();
 }
 
 void MainPanel::readSettings() {
-auto newPos = settings->panelPosition();
-if(newPos == PANEL_TOP || newPos == PANEL_BOTTOM) {
-this->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-// 使用非虚辅助方法代替 sizeHint()，避免构造期间虚函数调用问题
-int h = calculateSizeHint().height();
-if(h)
-setFixedHeight(h);
-setFixedWidth(QWIDGETSIZE_MAX);
-} else {
-this->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
-// 使用非虚辅助方法代替 sizeHint()，避免构造期间虚函数调用问题
-int w = calculateSizeHint().width();
-if(w)
-setFixedWidth(w);
-setFixedHeight(QWIDGETSIZE_MAX);
-}
-setPosition(newPos);
-pinButton->setChecked(settings->panelPinned());
+    auto newPos = settings->panelPosition();
+    setPosition(newPos); // 先设置布局方向，sizeHint 才会对应正确的固定尺寸
+    const QSize sh = sizeHint();
+    if(newPos == PANEL_TOP || newPos == PANEL_BOTTOM) {
+        this->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setFixedHeight(sh.height());
+        setFixedWidth(QWIDGETSIZE_MAX);
+    } else {
+        this->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+        setFixedWidth(sh.width());
+        setFixedHeight(QWIDGETSIZE_MAX);
+    }
+    pinButton->setChecked(settings->panelPinned());
 }
 

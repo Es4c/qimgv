@@ -1,9 +1,6 @@
 #pragma once
 
 #include <QWidget>
-#include <QDebug>
-#include <QStyleOption>
-#include <QPainter>
 #include <QVBoxLayout>
 #include "gui/customwidgets/sidepanelwidget.h"
 
@@ -26,8 +23,6 @@ public slots:
     void show();
     void hide();
 
-protected:
-    void paintEvent(QPaintEvent *);
 private:
     Ui::SidePanel *ui;
     SidePanelWidget *mWidget;

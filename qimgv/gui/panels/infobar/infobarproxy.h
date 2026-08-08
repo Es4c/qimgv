@@ -18,9 +18,6 @@ public:
 public slots:
     void setInfo(const QString& position, const QString& fileName, const QString& info);
 
-protected:
-    void paintEvent(QPaintEvent *event) override;
-
 private:
     InfoBarStateBuffer stateBuf;
     InfoBar *infoBar = nullptr;
