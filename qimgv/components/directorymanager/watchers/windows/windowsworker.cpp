@@ -170,9 +170,13 @@ void WindowsWorker::run() {
                 continue;
             }
 
-            // ⭐ 事件包超过缓冲 → 指数扩容重试，而不是让 watcher 静默退出
-            if (err == ERROR_NOTIFY_ENUM_DIR && buffer.size() < kMaxBufferSize) {
-                buffer.resize(std::min(buffer.size() * 2, kMaxBufferSize));
+            // ⭐ 陈旧 cancel（句柄值复用后被误取消的新读）→ 可重试，非致命
+            if (err == ERROR_OPERATION_ABORTED) {
+                continue;
+            }
+
+            // ⭐ 系统内部缓冲溢出（事件已丢失，扩容应用缓冲无效）→ 直接重挂，避免 watcher 静默死亡
+            if (err == ERROR_NOTIFY_ENUM_DIR) {
                 continue;
             }
 
@@ -181,6 +185,10 @@ void WindowsWorker::run() {
         }
 
         if (bytesReturned == 0) {
+            // ⭐ 应用缓冲太小，整批事件被丢弃 → 指数扩容后重试
+            if (buffer.size() < kMaxBufferSize) {
+                buffer.resize(std::min(buffer.size() * 2, kMaxBufferSize));
+            }
             continue;
         }
 
@@ -207,6 +215,11 @@ void WindowsWorker::run() {
         // ⭐ 批量派发，减少排队信号与事件循环次数
         if (!batch.isEmpty()) {
             emit notifyEvents(batch);
+        }
+
+        // ⭐ 扩容仅用于应急，恢复后回收缓冲，避免常驻大内存
+        if (buffer.size() > kInitialBufferSize) {
+            buffer.resize(kInitialBufferSize);
         }
     }
 
