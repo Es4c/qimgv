@@ -69,10 +69,11 @@ void FloatingMessage::setText(const QString &text) {
     ui->textLabel->setText(text);
     const bool empty = text.isEmpty();
     const bool wasHidden = ui->textLabel->isHidden();
-    if(empty != wasHidden) {
+    if(empty != wasHidden)
         empty ? ui->textLabel->hide() : ui->textLabel->show();
-        recalculateGeometry();
-    }
+    // 无条件重算：showEvent 的脏标记只追踪容器变化，长度/可见性等
+    // 内容变化若漏掉重算，隐藏期间换消息会导致重新显示时几何过期
+    recalculateGeometry();
 }
 
 void FloatingMessage::setIcon(FloatingMessageIcon icon) {
@@ -102,6 +103,7 @@ void FloatingMessage::setIcon(FloatingMessageIcon icon) {
             ui->iconLabel->setIconPath(":/res/icons/common/notifications/success16.png");
             break;
     }
+    recalculateGeometry();
 }
 
 void FloatingMessage::mousePressEvent(QMouseEvent *event) {
