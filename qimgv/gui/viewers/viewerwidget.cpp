@@ -472,7 +472,7 @@ void ViewerWidget::hideCursor() {
     }
 
     if(!inTarget && videoPlayer && videoPlayer->getPlayer()) {
-        auto *player = videoPlayer->getPlayer().get();
+        auto *player = videoPlayer->getPlayer();
         const QPoint p = player->mapFrom(this, pos);
         if(player->rect().contains(p))
             inTarget = true;

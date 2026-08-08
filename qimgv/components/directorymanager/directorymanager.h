@@ -99,7 +99,7 @@ public:
 
     bool insertFileEntry(const QString &filePath);
     bool forceInsertFileEntry(const QString &filePath);
-    bool forceInsertFileEntry(const QString &filePath, const std::filesystem::directory_entry &stdEntry);
+    bool forceInsertFileEntry(const QString &filePath, const FSEntry &entry);
     void removeFileEntry(const QString &filePath);
     void updateFileEntry(const QString &filePath);
     void renameFileEntry(const FilePath &oldFilePath, const FileName &newFileName);

@@ -41,7 +41,12 @@ public:
 
     FSEntry(FilePath _path, FileName _name, bool _isDirectory) noexcept;
 
+    // 单次 stat 取齐类型/大小/修改时间（QFileInfo 内部缓存），供各调用方复用
     static std::optional<FSEntry> fromPath(const QString &filePath);
+    // 复用目录枚举已得到的文件名，避免二次解析路径
+    static std::optional<FSEntry> fromPath(const QString &filePath, const QString &name);
+
+    static QString extractFileName(const QString& path) noexcept;
 
     bool operator==(const QString &anotherPath) const noexcept;
 
@@ -51,7 +56,4 @@ public:
     std::uintmax_t size = 0;
     std::filesystem::file_time_type modifyTime;
     bool isDirectory = false;
-
-private:
-    static QString extractFileName(const QString& path) noexcept;
 };

@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include <memory>
 #include <QVBoxLayout>
 #include "videoplayer.h"
 #include "settings.h"
@@ -11,11 +10,12 @@
 #include <QLabel>
 #include <QFileInfo>
 #include <QDebug>
+#include <QPointer>
 
 class VideoPlayerInitProxy : public VideoPlayer {
 public:
     VideoPlayerInitProxy(QWidget *parent = nullptr);
-    ~VideoPlayerInitProxy();
+    ~VideoPlayerInitProxy() = default;
     bool showVideo(QString file);
     void seek(int pos);
     void seekRelative(int pos);
@@ -32,7 +32,7 @@ public:
     int volume();
     void setVideoUnscaled(bool mode);
     void setLoopPlayback(bool mode);
-    std::shared_ptr<VideoPlayer> getPlayer();
+    VideoPlayer* getPlayer();
     bool isInitialized();
 
     void installEventFilter(QObject *filterObj);
@@ -47,7 +47,7 @@ protected:
 
 private:
     QLibrary playerLib;
-    std::shared_ptr<VideoPlayer> player;
+    QPointer<VideoPlayer> player;
     bool initPlayer();
     QVBoxLayout *layout;
     QLabel *errorLabel = nullptr;

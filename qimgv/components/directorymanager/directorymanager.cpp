@@ -353,18 +353,9 @@ void DirectoryManager::addEntriesFromDirectory(std::vector<FSEntry> &entryVec, c
             const bool supported = (dot > 0 && dot < name.size() - 1)
                                    && isSupportedSuffix(QStringView(name).mid(dot + 1));
             if (supported) {
-                FSEntry newEntry;
-                newEntry.name = name;
-                newEntry.path = path;
-                newEntry.isDirectory = false;
-
-                std::error_code ec2;
-                newEntry.size = entry.file_size(ec2);
-                if (ec2) continue;
-                newEntry.modifyTime = entry.last_write_time(ec2);
-                if (ec2) continue;
-
-                entryVec.emplace_back(std::move(newEntry));
+                // ⭐ QFileInfo 单次 stat 取齐 size/mtime，替代 file_size+last_write_time 两次重复 stat
+                if (auto newEntry = FSEntry::fromPath(path, name))
+                    entryVec.emplace_back(std::move(*newEntry));
             }
         }
     }
@@ -392,20 +383,9 @@ void DirectoryManager::addEntriesFromDirectoryRecursive(std::vector<FSEntry> &en
                                && isSupportedSuffix(QStringView(name).mid(dot + 1));
 
         if (!entry.is_directory(ec) && !ec && supported) {
-            FSEntry newEntry;
-            newEntry.name = name;
-            newEntry.path = path;
-            newEntry.isDirectory = false;
-
-            std::error_code ec2;
-
-            newEntry.size = entry.file_size(ec2);
-            if (ec2) continue;
-
-            newEntry.modifyTime = entry.last_write_time(ec2);
-            if (ec2) continue;
-
-            entryVec.emplace_back(std::move(newEntry));
+            // ⭐ QFileInfo 单次 stat 取齐 size/mtime，替代两次重复 stat
+            if (auto newEntry = FSEntry::fromPath(path, name))
+                entryVec.emplace_back(std::move(*newEntry));
         }
     }
 }
@@ -465,10 +445,9 @@ void DirectoryManager::setSortingMode(SortingMode mode) {
 }
 
 bool DirectoryManager::insertFileEntry(const QString &filePath) {
-    // 一次 directory_entry 构造同时完成类型判断与元数据获取，避免重复 stat
-    std::error_code ec;
-    std::filesystem::directory_entry stdEntry(std::filesystem::path(filePath.toStdWString()), ec);
-    if(ec || !stdEntry.is_regular_file(ec) || ec)
+    // ⭐ QFileInfo 单次 stat 取齐类型与元数据，替代 directory_entry 构造 + 后续重复 stat
+    auto entry = FSEntry::fromPath(filePath);
+    if(!entry || entry->isDirectory)
         return false;
 
     const qsizetype dot = filePath.lastIndexOf(u'.');
@@ -477,25 +456,20 @@ bool DirectoryManager::insertFileEntry(const QString &filePath) {
     if(!isSupportedSuffix(QStringView(filePath).mid(dot + 1)))
         return false;
 
-    return forceInsertFileEntry(filePath, stdEntry);
+    return forceInsertFileEntry(filePath, *entry);
 }
 
 bool DirectoryManager::forceInsertFileEntry(const QString &filePath) {
-    std::error_code ec;
-    std::filesystem::directory_entry stdEntry(std::filesystem::path(filePath.toStdWString()), ec);
-    if(ec || !stdEntry.is_regular_file(ec) || ec)
+    auto entry = FSEntry::fromPath(filePath);
+    if(!entry || entry->isDirectory)
         return false;
-    return forceInsertFileEntry(filePath, stdEntry);
+    return forceInsertFileEntry(filePath, *entry);
 }
 
-bool DirectoryManager::forceInsertFileEntry(const QString &filePath, const std::filesystem::directory_entry &stdEntry) {
+bool DirectoryManager::forceInsertFileEntry(const QString &filePath, const FSEntry &entry) {
     if(containsFile(filePath))
         return false;
-    QString fileName = QString::fromStdWString(stdEntry.path().filename().wstring());
-    // 使用包装类构造 FSEntry
-    FSEntry entry(FilePath(filePath), FileName(fileName), stdEntry.file_size(), stdEntry.last_write_time(), stdEntry.is_directory());
-
-    // 优化：使用 lambda 替代 std::bind
+    // FSEntry 已含全部元数据（单次 stat），直接插入，无额外 stat
     auto cmpFn = compareFunction();
     auto it = insert_sorted(fileEntryVec, entry, [this, cmpFn](const FSEntry& a, const FSEntry& b) {
         return (this->*cmpFn)(a, b);
@@ -540,10 +514,9 @@ void DirectoryManager::renameFileEntry(const FilePath& oldFilePath, const FileNa
             insertFileEntry(newFilePath);
         return;
     }
-    // ⭐ 复用一次 directory_entry 完成类型判断与元数据获取，避免重复 stat
-    std::error_code ec;
-    std::filesystem::directory_entry stdEntry(std::filesystem::path(newFilePath.toStdWString()), ec);
-    if(ec || !stdEntry.is_regular_file(ec) || ec) {
+    // ⭐ QFileInfo 单次 stat 完成类型判断与元数据获取，替代 directory_entry + 重复 stat
+    auto newEntryOpt = FSEntry::fromPath(newFilePath, newFileName.value);
+    if(!newEntryOpt || newEntryOpt->isDirectory) {
         removeFileEntry(oldFilePath.value);
         return;
     }
@@ -575,8 +548,8 @@ void DirectoryManager::renameFileEntry(const FilePath& oldFilePath, const FileNa
     // 删除旧位置
     fileEntryVec.erase(fileEntryVec.begin() + oldIndex);
 
-    // 插入新条目（复用上面的 stdEntry，无额外 stat）
-    FSEntry newEntry(FilePath(newFilePath), FileName(newFileName), stdEntry.file_size(), stdEntry.last_write_time(), stdEntry.is_directory());
+    // 插入新条目（复用上面单次 stat 的元数据，无额外 stat）
+    FSEntry newEntry = std::move(*newEntryOpt);
 
     auto cmpFn = compareFunction();
     auto it = insert_sorted(fileEntryVec, newEntry, [this, cmpFn](const FSEntry& a, const FSEntry& b) {
@@ -594,9 +567,8 @@ void DirectoryManager::renameFileEntry(const FilePath& oldFilePath, const FileNa
 bool DirectoryManager::insertDirEntry(const QString &dirPath) {
     if(containsDir(dirPath))
         return false;
-    std::filesystem::path pathObj(dirPath.toStdWString());
-    std::filesystem::directory_entry stdEntry(pathObj);
-    QString dirName = QString::fromStdWString(stdEntry.path().filename().wstring());
+    // 不再构造 directory_entry 做无谓 stat，文件名直接由路径解析
+    QString dirName = FSEntry::extractFileName(dirPath);
     FSEntry newEntry;
     newEntry.name = dirName;
     newEntry.path = dirPath;
@@ -940,35 +912,23 @@ void DirectoryManager::processPendingAdditions(const QVector<QString> &adds) {
         }
     }
 
-    // 一次 directory_entry 完成类型判断与元数据获取，避免重复 stat
+    // ⭐ QFileInfo 单次 stat 取齐类型与元数据，替代 directory_entry 构造 + 重复 stat
     std::vector<FSEntry> newFiles;
     std::vector<FSEntry> newDirs;
     for(const auto &p : paths) {
-        std::error_code ec;
-        std::filesystem::directory_entry stdEntry(std::filesystem::path(p.toStdWString()), ec);
-        if(ec) continue;
-        if(stdEntry.is_directory(ec) && !ec) {
-            FSEntry e;
-            e.name = QString::fromStdWString(stdEntry.path().filename().wstring());
-            e.path = p;
-            e.isDirectory = true;
-            newDirs.push_back(std::move(e));
-        } else if(!ec) {
+        auto e = FSEntry::fromPath(p);
+        if(!e)
+            continue;
+        if(e->isDirectory) {
+            newDirs.push_back(std::move(*e));
+        } else {
             // ⭐ 用 basename 取后缀，与 addEntriesFromDirectory 保持一致，
             // 避免监视目录路径自身含点时误判
-            const QString name = QString::fromStdWString(stdEntry.path().filename().wstring());
+            const QString name = e->name;
             const qsizetype dot = name.lastIndexOf(u'.');
             if(dot <= 0 || dot == name.size() - 1) continue;
             if(!isSupportedSuffix(QStringView(name).mid(dot + 1))) continue;
-            FSEntry e;
-            e.name = name;
-            e.path = p;
-            e.isDirectory = false;
-            e.size = stdEntry.file_size(ec);
-            if(ec) continue;
-            e.modifyTime = stdEntry.last_write_time(ec);
-            if(ec) continue;
-            newFiles.push_back(std::move(e));
+            newFiles.push_back(std::move(*e));
         }
     }
 

@@ -1,16 +1,10 @@
 #include "fsentry.h"
+#include <QFileInfo>
+#include <QDateTime>
+#include <algorithm>
+#include <chrono>
 
 FSEntry::FSEntry() noexcept = default;
-
-static std::filesystem::path toFsPath(const QString& path) {
-#ifdef _WIN32
-    return std::filesystem::path(
-        reinterpret_cast<const wchar_t*>(path.utf16())
-    );
-#else
-    return std::filesystem::path(path.toStdString());
-#endif
-}
 
 QString FSEntry::extractFileName(const QString& path) noexcept {
     qsizetype pos = path.lastIndexOf('/');
@@ -24,29 +18,43 @@ QString FSEntry::extractFileName(const QString& path) noexcept {
     return path.mid(pos + 1);
 }
 
-FSEntry::FSEntry(const QString &filePath)
-{
-    std::error_code ec;
+// QDateTime(ms) -> file_time_type：仅用于排序与变更比较，毫秒精度足够
+static std::filesystem::file_time_type toFileTime(const QDateTime &dt) {
+    using namespace std::chrono;
+    return file_clock::from_sys(system_clock::time_point(milliseconds(dt.toMSecsSinceEpoch())));
+}
 
-    auto p = toFsPath(filePath);
-    std::filesystem::directory_entry entry(p, ec);
+std::optional<FSEntry> FSEntry::fromPath(const QString &filePath) {
+    // ⭐ QFileInfo 首次访问触发一次 stat 并缓存全部元数据，
+    // 取代 directory_entry 构造 + file_size + last_write_time 的 3 次 stat
+    QFileInfo fi(filePath);
+    if (!fi.exists())
+        return std::nullopt;
 
-    if (ec)
-        return;
+    FSEntry result;
+    result.path = filePath;
+    result.name = extractFileName(filePath);
+    result.isDirectory = fi.isDir();
 
-    path = filePath;
-    name = extractFileName(filePath);
-
-    isDirectory = entry.is_directory(ec);
-    if (ec)
-        return;
-
-    if (!isDirectory) {
-        size = entry.file_size(ec);
-        if (ec) return;
-
-        modifyTime = entry.last_write_time(ec);
+    if (!result.isDirectory) {
+        result.size = static_cast<std::uintmax_t>(fi.size());
+        result.modifyTime = toFileTime(fi.lastModified());
     }
+
+    return result;
+}
+
+std::optional<FSEntry> FSEntry::fromPath(const QString &filePath, const QString &name) {
+    auto entry = fromPath(filePath);
+    if (entry)
+        entry->name = name;
+    return entry;
+}
+
+FSEntry::FSEntry(const QString &filePath) {
+    // 与 fromPath 共用同一套单次 stat 逻辑，避免两处实现漂移
+    if (auto entry = fromPath(filePath))
+        *this = std::move(*entry);
 }
 
 FSEntry::FSEntry(FilePath _path, FileName _name, std::uintmax_t _size,
@@ -70,36 +78,6 @@ FSEntry::FSEntry(FilePath _path, FileName _name, bool _isDirectory) noexcept
       name(std::move(_name.value)),
       isDirectory(_isDirectory)
 {}
-
-std::optional<FSEntry> FSEntry::fromPath(const QString &filePath)
-{
-    std::error_code ec;
-
-    auto p = toFsPath(filePath);
-
-    std::filesystem::directory_entry entry(p, ec);
-    if (ec)
-        return std::nullopt;
-
-    FSEntry result;
-
-    result.path = filePath;
-    result.name = extractFileName(filePath);
-
-    result.isDirectory = entry.is_directory(ec);
-    if (ec)
-        return std::nullopt;
-
-    if (!result.isDirectory) {
-        result.size = entry.file_size(ec);
-        if (ec) return std::nullopt;
-
-        result.modifyTime = entry.last_write_time(ec);
-        if (ec) return std::nullopt;
-    }
-
-    return result;
-}
 
 bool FSEntry::operator==(const QString &anotherPath) const noexcept {
     return path == anotherPath;

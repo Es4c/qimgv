@@ -15,8 +15,7 @@ static constexpr const char* LINUX_ALT_PLUGIN_DIR1 = "/usr/lib/qimgv";
 static constexpr const char* LINUX_ALT_PLUGIN_DIR2 = "/usr/lib64/qimgv";
 
 VideoPlayerInitProxy::VideoPlayerInitProxy(QWidget *parent)
-    : VideoPlayer(parent),
-      player(nullptr)
+    : VideoPlayer(parent)
 {
     setAccessibleName("VideoPlayerInitProxy");
     setMouseTracking(true);
@@ -35,14 +34,6 @@ VideoPlayerInitProxy::VideoPlayerInitProxy(QWidget *parent)
 #endif
 }
 
-VideoPlayerInitProxy::~VideoPlayerInitProxy() {
-    // 修复：解除父子关系，避免 double delete
-    if (player) {
-        player->setParent(nullptr);
-        player.reset();
-    }
-}
-
 void VideoPlayerInitProxy::onSettingsChanged() {
     if(!player)
         return;
@@ -50,7 +41,7 @@ void VideoPlayerInitProxy::onSettingsChanged() {
     player->setVideoUnscaled(!settings->expandImage());
 }
 
-std::shared_ptr<VideoPlayer> VideoPlayerInitProxy::getPlayer() {
+VideoPlayer* VideoPlayerInitProxy::getPlayer() {
     return player;
 }
 
@@ -102,7 +93,7 @@ inline bool VideoPlayerInitProxy::initPlayer() {
         return false;
     }
 
-    player.reset(pl);
+    player = pl;
 
     // 配置播放器
     player->setMuted(!settings->playVideoSounds());
@@ -111,19 +102,19 @@ inline bool VideoPlayerInitProxy::initPlayer() {
 
     // 设置父子关系和布局
     player->setParent(this);
-    layout->addWidget(player.get());
+    layout->addWidget(player);
     player->hide();
-    setFocusProxy(player.get());
+    setFocusProxy(player);
 
     // 连接信号
-    connect(player.get(), &VideoPlayer::durationChanged,   this, &VideoPlayer::durationChanged);
-    connect(player.get(), &VideoPlayer::positionChanged,   this, &VideoPlayer::positionChanged);
-    connect(player.get(), &VideoPlayer::videoPaused,       this, &VideoPlayer::videoPaused);
-    connect(player.get(), &VideoPlayer::playbackFinished,  this, &VideoPlayer::playbackFinished);
+    connect(player, &VideoPlayer::durationChanged,   this, &VideoPlayer::durationChanged);
+    connect(player, &VideoPlayer::positionChanged,   this, &VideoPlayer::positionChanged);
+    connect(player, &VideoPlayer::videoPaused,       this, &VideoPlayer::videoPaused);
+    connect(player, &VideoPlayer::playbackFinished,  this, &VideoPlayer::playbackFinished);
 
     // 安装事件过滤器
     if(eventFilterObj)
-        player.get()->installEventFilter(eventFilterObj);
+        player->installEventFilter(eventFilterObj);
 
     return true;
 }

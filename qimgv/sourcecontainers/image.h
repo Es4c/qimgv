@@ -22,7 +22,8 @@ public:
     virtual ~Image() = default;
 
     // --- 内联简单 getter 函数 ---
-    QString filePath() const { return mPath; }
+    // 返回常量引用：mPath 在构造期确定且生命周期随对象，避免每次调用复制 QString
+    const QString& filePath() const { return mPath; }
     bool isLoaded() const { return mLoaded; }
     bool isEdited() const { return mEdited; }
     
