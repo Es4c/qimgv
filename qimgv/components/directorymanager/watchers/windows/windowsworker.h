@@ -80,6 +80,7 @@ private:
     std::atomic<HANDLE> activeHandle{INVALID_HANDLE_VALUE};
     QString pendingPath;
     QByteArray buffer;
+    bool networkBufferCapped = false;   // ⭐ 网络目录(SMB)缓冲上限 64KB，仅 worker 线程访问
     std::atomic<bool> needsRestart{false};
     QMutex pathMutex;
 };

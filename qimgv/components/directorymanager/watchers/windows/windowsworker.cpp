@@ -7,6 +7,7 @@
 namespace {
 constexpr qsizetype kInitialBufferSize = 131072;            // 128KB
 constexpr qsizetype kMaxBufferSize = 16 * 1024 * 1024;      // 16MB，防止无限膨胀
+constexpr qsizetype kNetworkBufferSize = 65536;             // 64KB，网络目录(SMB)缓冲上限
 constexpr qsizetype kMaxFileNameLength = 4096;              // 单条文件名上限（WCHAR）
 }
 
@@ -135,6 +136,9 @@ void WindowsWorker::run() {
                 activeHandle.store(hDir, std::memory_order_release);
             }
 
+            // ⭐ 新句柄/新路径，网络上限标记需重新判定
+            networkBufferCapped = false;
+
             if (hDirectory.get() == INVALID_HANDLE_VALUE) {
                 break;
             }
@@ -180,14 +184,22 @@ void WindowsWorker::run() {
                 continue;
             }
 
+            // ⭐ 网络目录(SMB)缓冲 >64KB 触发 ERROR_INVALID_PARAMETER → 降档至 64KB 并标记上限
+            if (err == ERROR_INVALID_PARAMETER && buffer.size() > kNetworkBufferSize) {
+                buffer.resize(kNetworkBufferSize);
+                networkBufferCapped = true;
+                continue;
+            }
+
             // 真错误
             break;
         }
 
         if (bytesReturned == 0) {
-            // ⭐ 应用缓冲太小，整批事件被丢弃 → 指数扩容后重试
-            if (buffer.size() < kMaxBufferSize) {
-                buffer.resize(std::min(buffer.size() * 2, kMaxBufferSize));
+            // ⭐ 应用缓冲太小，整批事件被丢弃 → 指数扩容后重试（网络目录上限 64KB）
+            const qsizetype limit = networkBufferCapped ? kNetworkBufferSize : kMaxBufferSize;
+            if (buffer.size() < limit) {
+                buffer.resize(std::min(buffer.size() * 2, limit));
             }
             continue;
         }
