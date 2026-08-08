@@ -74,8 +74,10 @@ void ScriptManager::processArguments(QStringList &cmd, const std::shared_ptr<Ima
             i.replace("%file%", img->filePath());
 #ifdef __WIN32
         // force "\" as a directory separator
-        i.replace("/", "\\");
-        i.replace("\\\\", "\\");
+        if(i.contains('/')) {
+            i.replace('/', '\\');
+            i.replace("\\\\", "\\");
+        }
 #endif
     }
 }
@@ -84,6 +86,7 @@ void ScriptManager::processArguments(QStringList &cmd, const std::shared_ptr<Ima
 QStringList ScriptManager::splitCommandLine(const QString &cmdLine) {
     QStringList list;
     QString arg;
+    arg.reserve(cmdLine.size());
     bool escape = false;
     enum State : std::uint8_t { Idle, Arg, QuotedArg } state = Idle;
     
@@ -155,6 +158,10 @@ const QList<QString> ScriptManager::scriptNames() const {
     return scripts.keys();
 }
 
-Script ScriptManager::getScript(const QString& scriptName) const {
-    return scripts.value(scriptName);
+const Script& ScriptManager::getScript(const QString& scriptName) const {
+    auto it = scripts.constFind(scriptName);
+    if(it != scripts.cend())
+        return it.value();
+    static const Script nullScript;
+    return nullScript;
 }

@@ -23,7 +23,7 @@ public:
     void removeScript(const QString& scriptName);
     const QHash<QString, Script>& allScripts() const;
     const QList<QString> scriptNames() const;
-    Script getScript(const QString& scriptName) const;
+    const Script& getScript(const QString& scriptName) const;
     void addScript(const QString& scriptName, const Script& script);
     static QStringList splitCommandLine(const QString& cmdLine);
 
