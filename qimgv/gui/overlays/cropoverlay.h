@@ -39,6 +39,7 @@ signals:
 
 public slots:
     void hide();
+    void show();
     void onSelectionOutsideChange(const QRect& selection);
     void selectAll();
     void setAspectRatio(const QPointF& ratio);
@@ -70,6 +71,9 @@ private:
     bool lockAspectRatio = false;
     CursorAction cursorAction = CursorAction::None;
     CursorAction lastCursorAction = CursorAction::None; // 上次设置的光标动作，避免重复 setCursor
+    // hide() 是否已执行：显式标记而非 isHidden()（祖先隐藏时 isHidden() 也为 true，
+    // 会误跳过 clearSelection() 导致重新显示时残留旧选区）
+    bool mHiddenByHide = false;
 
     // 绘制资源
     int handleSize = 8;

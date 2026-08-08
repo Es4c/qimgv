@@ -40,5 +40,9 @@ private:
     Ui::VideoControls *ui;
     int lastPosition;
     int lastDuration;
-    PlaybackMode mode;
+    // 记录上次格式化时的 mode：formatSeconds 输出依赖 mode，
+    // 仅比时长/位置不足以判断文本是否仍需刷新
+    PlaybackMode lastPositionMode = PLAYBACK_ANIMATION;
+    PlaybackMode lastDurationMode = PLAYBACK_ANIMATION;
+    PlaybackMode mode = PLAYBACK_ANIMATION;
 };

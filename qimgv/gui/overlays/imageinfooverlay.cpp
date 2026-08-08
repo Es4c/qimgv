@@ -24,8 +24,10 @@ ImageInfoOverlay::~ImageInfoOverlay() {
 }
 
 void ImageInfoOverlay::setExifInfo(const QHash<QString, QString>& info) {
-    // 信息未变则直接返回，避免隐藏/重排全部条目造成的布局抖动
-    if (info == m_lastInfo)
+    // 信息未变且非空才直接返回，避免隐藏/重排全部条目造成的布局抖动；
+    // 空信息必须走 entryStub 分支（m_lastInfo 初始为空，直接短路会导致
+    // 首次打开无元数据图片时 "<no metadata found>" 提示永远不显示）
+    if (!info.isEmpty() && info == m_lastInfo)
         return;
     m_lastInfo = info;
 

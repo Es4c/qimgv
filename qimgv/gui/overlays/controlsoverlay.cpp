@@ -51,6 +51,11 @@ ControlsOverlay::ControlsOverlay(FloatingWidgetContainer *parent) :
 }
 
 void ControlsOverlay::show() {
+    // 已完全可见且无动画进行时，重复 show（如反复进全屏）不再重放淡入
+    if(isVisible() && fadeEffect->opacity() >= 1.0f
+       && fadeAnimation->state() == QAbstractAnimation::Stopped
+       && fadeInAnimation->state() == QAbstractAnimation::Stopped)
+        return;
     fadeEffect->setOpacity(0.0);
     fadeAnimation->stop();
     fadeInAnimation->stop();

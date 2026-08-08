@@ -69,8 +69,15 @@ void CropOverlay::setAspectRatio(const QPointF& ratio) {
     }
 }
 
+void CropOverlay::show() {
+    // 重新显示时复位隐藏标记，保证下次 hide() 仍会清理选区
+    mHiddenByHide = false;
+    FloatingWidget::show();
+}
+
 void CropOverlay::hide() {
-    if(isHidden()) return;   // 已隐藏则跳过，避免重复清空选区/重绘
+    if(mHiddenByHide) return;   // 已隐藏则跳过，避免重复清空选区/重绘
+    mHiddenByHide = true;
     clearSelection();
     FloatingWidget::hide();
 }

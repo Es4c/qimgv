@@ -70,7 +70,9 @@ protected:
     virtual void enterEvent(QEnterEvent *event);
 
 private:
-    bool visibilityEnabled, imageDoesNotFit;
+    // 显式初始化，避免首帧 enterEvent/updateMap 读到未定义值：
+    // 默认图片适配窗口（imageDoesNotFit=false），地图默认启用可见性
+    bool visibilityEnabled = true, imageDoesNotFit = false;
     class MapOverlayPrivate;
     std::unique_ptr<MapOverlayPrivate> d;
 };

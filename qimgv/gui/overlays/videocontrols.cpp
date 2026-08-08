@@ -19,6 +19,8 @@ VideoControls::VideoControls(FloatingWidgetContainer *parent) :
 
     lastPosition = -1;
     lastDuration = -1;
+    lastPositionMode = mode;
+    lastDurationMode = mode;
 
     readSettings();
     connect(settings, &Settings::settingsChanged, this, &VideoControls::readSettings);
@@ -64,9 +66,12 @@ static QString formatSeconds(int value, PlaybackMode mode, bool forPosition=fals
 }
 
 void VideoControls::setPlaybackDuration(int duration) {
-    if(duration == lastDuration)
-        return;   // 时长未变则跳过，避免重复 setRange/setText
+    // 时长与格式化模式均未变才跳过，避免重复 setRange/setText；
+    // 若 mode 变了（视频↔动画）即使时长相同也要重刷新格式
+    if(duration == lastDuration && mode == lastDurationMode)
+        return;
     lastDuration = duration;
+    lastDurationMode = mode;
     QString durationStr = formatSeconds(duration, mode, false);
     ui->seekBar->setRange(0, duration - 1);
     ui->durationLabel->setText(durationStr);
@@ -75,7 +80,7 @@ void VideoControls::setPlaybackDuration(int duration) {
 }
 
 void VideoControls::setPlaybackPosition(int position) {
-    if(position == lastPosition)
+    if(position == lastPosition && mode == lastPositionMode)
         return;
     QString positionStr = formatSeconds(position, mode, true);
     ui->positionLabel->setText(positionStr);
@@ -83,6 +88,7 @@ void VideoControls::setPlaybackPosition(int position) {
     ui->seekBar->setValue(position);
     ui->seekBar->blockSignals(false);
     lastPosition = position;
+    lastPositionMode = mode;
 }
 
 void VideoControls::onPlaybackPaused(bool mode) {
