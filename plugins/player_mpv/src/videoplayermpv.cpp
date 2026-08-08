@@ -17,10 +17,10 @@ VideoPlayerMpv::VideoPlayerMpv(QWidget *parent) : VideoPlayer(parent), m_paused(
     setFocusPolicy(Qt::NoFocus);
     m_mpv->setFocusPolicy(Qt::NoFocus);
 
-    connect(m_mpv, SIGNAL(durationChanged(int)), this, SIGNAL(durationChanged(int)));
-    connect(m_mpv, SIGNAL(positionChanged(int)), this, SIGNAL(positionChanged(int)));
-    connect(m_mpv, SIGNAL(videoPaused(bool)), this, SIGNAL(videoPaused(bool)));
-    connect(m_mpv, SIGNAL(playbackFinished()), this, SIGNAL(playbackFinished()));
+    connect(m_mpv, &MpvWidget::durationChanged,  this, &VideoPlayer::durationChanged);
+    connect(m_mpv, &MpvWidget::positionChanged,  this, &VideoPlayer::positionChanged);
+    connect(m_mpv, &MpvWidget::videoPaused,      this, &VideoPlayer::videoPaused);
+    connect(m_mpv, &MpvWidget::playbackFinished, this, &VideoPlayer::playbackFinished);
 }
 
 bool VideoPlayerMpv::showVideo(const QString &file) {
