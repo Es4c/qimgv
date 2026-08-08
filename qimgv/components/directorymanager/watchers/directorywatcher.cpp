@@ -47,8 +47,8 @@ void DirectoryWatcherPrivate::startWorker()
 {
     if (!worker)
         return;
-    // 调用 run() 槽函数（需将 WatcherWorker::run 声明为槽）
-    QMetaObject::invokeMethod(worker.data(), "run", Qt::QueuedConnection);
+    // 调用 run()（成员函数指针版本，避免字符串解析）
+    QMetaObject::invokeMethod(worker.data(), &WatcherWorker::run, Qt::QueuedConnection);
 }
 
 // ==================== DirectoryWatcher 实现 ====================

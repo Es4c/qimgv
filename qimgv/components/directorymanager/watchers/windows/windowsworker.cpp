@@ -2,6 +2,7 @@
 #include "windowsworker.h"
 #include "windowswatcher_p.h"
 #include <cstddef>
+#include <QSet>
 #include <QThread>
 
 namespace {
@@ -9,6 +10,7 @@ constexpr qsizetype kInitialBufferSize = 131072;            // 128KB
 constexpr qsizetype kMaxBufferSize = 16 * 1024 * 1024;      // 16MB，防止无限膨胀
 constexpr qsizetype kNetworkBufferSize = 65536;             // 64KB，网络目录(SMB)缓冲上限
 constexpr qsizetype kMaxFileNameLength = 4096;              // 单条文件名上限（WCHAR）
+constexpr int kShrinkQuietReads = 4;                        // 连续多少次低利用率读取后回收缓冲
 }
 
 WindowsWorker::WindowsWorker() {
@@ -111,6 +113,9 @@ void WindowsWorker::run() {
         FILE_NOTIFY_CHANGE_SIZE |
         FILE_NOTIFY_CHANGE_LAST_WRITE;
 
+    // ⭐ 缓冲回收前的连续低利用率读取计数（仅 worker 线程访问）
+    int quietReads = 0;
+
     while (true) {
         // ⭐ 优先检查运行状态（避免卡住）
         if (!isRunning.load(std::memory_order_acquire)) {
@@ -136,8 +141,9 @@ void WindowsWorker::run() {
                 activeHandle.store(hDir, std::memory_order_release);
             }
 
-            // ⭐ 新句柄/新路径，网络上限标记需重新判定
+            // ⭐ 新句柄/新路径，网络上限标记需重新判定，缓冲回收计数也复位
             networkBufferCapped = false;
+            quietReads = 0;
 
             if (hDirectory.get() == INVALID_HANDLE_VALUE) {
                 break;
@@ -206,13 +212,14 @@ void WindowsWorker::run() {
 
         auto notify = reinterpret_cast<PFILE_NOTIFY_INFORMATION>(buffer.data());
         QVector<NotifyEvent> batch;
+        batch.reserve(bytesReturned / 32 + 16);
 
         do {
             const auto len = notify->FileNameLength / sizeof(WCHAR);
             if (len > 0 && len <= kMaxFileNameLength) {
-                const QString fileName(
-                    reinterpret_cast<const QChar*>(notify->FileName),
-                    static_cast<qsizetype>(len));
+                const QString fileName(QString::fromUtf16(
+                    reinterpret_cast<const char16_t*>(notify->FileName),
+                    static_cast<qsizetype>(len)));
 
                 batch.append(NotifyEvent{fileName, notify->Action});
             }
@@ -224,14 +231,40 @@ void WindowsWorker::run() {
 
         } while (true);
 
+        // ⭐ 批内去重：Windows 一次保存常同时产生 SIZE/LAST_WRITE 两个 MODIFY，
+        // 只保留首个，减少 GUI 线程重复派发与下游重复处理
+        if (batch.size() > 1) {
+            QSet<QString> seenModified;
+            QVector<NotifyEvent> deduped;
+            deduped.reserve(batch.size());
+            for (const NotifyEvent& ev : batch) {
+                if (ev.action == FILE_ACTION_MODIFIED) {
+                    if (seenModified.contains(ev.fileName))
+                        continue;
+                    seenModified.insert(ev.fileName);
+                }
+                deduped.append(ev);
+            }
+            if (deduped.size() != batch.size())
+                batch = std::move(deduped);
+        }
+
         // ⭐ 批量派发，减少排队信号与事件循环次数
         if (!batch.isEmpty()) {
             emit notifyEvents(batch);
         }
 
-        // ⭐ 扩容仅用于应急，恢复后回收缓冲，避免常驻大内存
+        // ⭐ 扩容仅用于应急；突发结束后再回收缓冲，避免常驻大内存。
+        // 连续多次低利用率读取才缩回，防止突发时反复扩容/缩回抖动
         if (buffer.size() > kInitialBufferSize) {
-            buffer.resize(kInitialBufferSize);
+            if (static_cast<qsizetype>(bytesReturned) < buffer.size() / 2)
+                ++quietReads;
+            else
+                quietReads = 0;
+            if (quietReads >= kShrinkQuietReads) {
+                buffer.resize(kInitialBufferSize);
+                quietReads = 0;
+            }
         }
     }
 

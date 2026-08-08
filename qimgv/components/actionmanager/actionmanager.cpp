@@ -8,7 +8,7 @@ ActionManager *actionManager = nullptr;
 
 ActionManager::ActionManager(QObject *parent) : QObject(parent) {
     // 预构建 action 名 → 信号方法的映射, 仅做一次
-    const QMetaObject *mo = metaObject();
+    const QMetaObject *mo = &ActionManager::staticMetaObject;
     m_methodCache.reserve(static_cast<qsizetype>(mo->methodCount()));
     for(int i = 0; i < mo->methodCount(); ++i) {
         const QMetaMethod m = mo->method(i);

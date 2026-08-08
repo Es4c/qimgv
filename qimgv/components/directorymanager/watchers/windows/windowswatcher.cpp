@@ -2,6 +2,10 @@
 #include "windowswatcher_p.h"
 #include "windowsworker.h"
 
+namespace {
+constexpr int kMaxRenameQueueSize = 128;   // 重命名配对队列上限，防止 OLD 无对应 NEW 时无限累积
+}
+
 WindowsWatcherPrivate::WindowsWatcherPrivate(WindowsWatcher* qq)
     : DirectoryWatcherPrivate(static_cast<DirectoryWatcher*>(qq), new WindowsWorker())
 {
@@ -30,6 +34,10 @@ void WindowsWatcherPrivate::dispatchNotify(const QVector<NotifyEvent>& events)
             break;
 
         case FILE_ACTION_RENAMED_OLD_NAME:
+            // ⭐ 队列上限：改名/移出目录只产生 OLD 而不会再有 NEW，长期累积会占内存。
+            // 挤出的最旧项视为已删除（该旧名字已不在监视目录中）
+            if (renameOldQueue.size() >= kMaxRenameQueueSize)
+                emit q->fileDeleted(renameOldQueue.dequeue());
             renameOldQueue.enqueue(ev.fileName);
             break;
 
