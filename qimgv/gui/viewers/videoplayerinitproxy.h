@@ -61,7 +61,4 @@ private:
 private slots:
     void onSettingsChanged();
 
-signals:
-    void playbackFinished();
-
 };

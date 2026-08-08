@@ -39,9 +39,6 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
 
-signals:
-    void playbackFinished();
-
  private:
     MpvWidget *m_mpv;
     bool m_paused;
