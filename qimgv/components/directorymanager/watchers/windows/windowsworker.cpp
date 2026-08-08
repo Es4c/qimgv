@@ -206,6 +206,7 @@ void WindowsWorker::run() {
             const qsizetype limit = networkBufferCapped ? kNetworkBufferSize : kMaxBufferSize;
             if (buffer.size() < limit) {
                 buffer.resize(std::min(buffer.size() * 2, limit));
+                quietReads = 0;  // ⭐ 扩容表明突发进行中，回收计数复位，防止残留计数立即触发缩回
             }
             continue;
         }
