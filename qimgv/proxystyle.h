@@ -12,7 +12,7 @@ public:
                        const QStyleOption *option,
                        QPainter *painter,
                        const QWidget *widget = nullptr) const override {
-        if (element == PE_FrameFocusRect) {
+        if (element == PE_FrameFocusRect) [[unlikely]] {
             return;                           // 直接忽略焦点矩形
         }
         QProxyStyle::drawPrimitive(element, option, painter, widget);

@@ -111,18 +111,18 @@ int main(int argc, char *argv[]) {
     qRegisterMetaTypeStreamOperators<Script>("Script");
 #endif
 
+    // 设置 Qt 应用程序信息（必须在 Settings 初始化之前, 否则 QSettings 读到默认组织名）
+    QCoreApplication::setOrganizationName("qimgv");
+    QCoreApplication::setOrganizationDomain("github.com/easymodo/qimgv");
+    QCoreApplication::setApplicationName("qimgv");
+    QCoreApplication::setApplicationVersion(appVersion.toString());
+
     // globals
     inputMap = InputMap::getInstance();
     appActions = Actions::getInstance();
     settings = Settings::getInstance();
     scriptManager = ScriptManager::getInstance();
     actionManager = ActionManager::getInstance();
-
-    // 设置 Qt 应用程序信息（移到 Settings 初始化之后）
-    QCoreApplication::setOrganizationName("qimgv");
-    QCoreApplication::setOrganizationDomain("github.com/easymodo/qimgv");
-    QCoreApplication::setApplicationName("qimgv");
-    QCoreApplication::setApplicationVersion(appVersion.toString());
 
     atexit(saveSettings);
 

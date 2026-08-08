@@ -1,9 +1,62 @@
 #include "themestore.h"
 
+#include <QGuiApplication>
+#include <QCoreApplication>
+
 // Helper function to create QColor from RGB hex value efficiently
 // Avoids runtime string parsing overhead of QColor("#RRGGBB")
 static inline QColor fromHex(uint rgb) {
     return QColor::fromRgb(rgb);
+}
+
+//------------------------------------------------------------------------------
+// 动态主题(系统/自定义): 基于系统调色板构造, 结果缓存, 调色板变化时自动失效
+namespace {
+    struct DynamicThemeCache {
+        bool valid = false;
+        ColorScheme scheme;
+    };
+
+    DynamicThemeCache systemThemeCache;
+    DynamicThemeCache customizedThemeCache;
+
+    // 构造动态主题(基于系统调色板), 仅 QPalette 变化时才需要重建
+    ColorScheme buildDynamicScheme(ColorSchemes name) {
+        QPalette p;
+        BaseColorScheme base = {};
+
+        base.background = p.window().color();
+        base.background_fullscreen = p.window().color();
+        base.widget = p.window().color();
+        base.widget_border = p.window().color();
+        base.text = p.text().color();
+        base.icons = p.text().color();
+        base.accent = p.highlight().color();
+
+        // 只计算一次高亮派生色
+        const QColor highlight = p.highlight().color();
+        base.scrollbar.setHsv(highlight.hue(),
+                              qBound(0, highlight.saturation() - 20, 240),
+                              qBound(0, highlight.value() - 35, 240));
+
+        base.tid = static_cast<int>(name);
+        return ColorScheme(base);
+    }
+
+    void invalidateDynamicThemeCaches(const QPalette &) {
+        systemThemeCache.valid = false;
+        customizedThemeCache.valid = false;
+    }
+
+    // 首次请求动态主题时注册调色板变化监听, 之后缓存一直有效直到系统主题变化
+    void registerPaletteListener() {
+        static bool registered = false;
+        if (registered)
+            return;
+        registered = true;
+        if (auto *guiApp = qobject_cast<QGuiApplication *>(QCoreApplication::instance()))
+            QObject::connect(guiApp, &QGuiApplication::paletteChanged, &invalidateDynamicThemeCaches);
+    }
 }
 
 ColorScheme ThemeStore::colorScheme(ColorSchemes name) {
@@ -75,26 +128,15 @@ ColorScheme ThemeStore::colorScheme(ColorSchemes name) {
 
     // Handle dynamic themes (System, Customized)
     if (name == COLORS_SYSTEM || name == COLORS_CUSTOMIZED) {
-        // Optimization: Construct QPalette only when needed
-        QPalette p;
-        BaseColorScheme base = {};
-
-        base.background = p.window().color();
-        base.background_fullscreen = p.window().color();
-        base.widget = p.window().color();
-        base.widget_border = p.window().color();
-        base.text = p.text().color();
-        base.icons = p.text().color();
-        base.accent = p.highlight().color();
-        
-        // Optimization: Pre-calculate highlight color once
-        QColor highlight = p.highlight().color();
-        base.scrollbar.setHsv(highlight.hue(), 
-                              qBound(0, highlight.saturation() - 20, 240), 
-                              qBound(0, highlight.value() - 35, 240));
-        
-        base.tid = static_cast<int>(name);
-        return ColorScheme(base);
+        // Optimization: Cache result, rebuilt only when palette changes
+        registerPaletteListener();
+        DynamicThemeCache &cache = (name == COLORS_SYSTEM) ? systemThemeCache
+                                                           : customizedThemeCache;
+        if (!cache.valid) {
+            cache.scheme = buildDynamicScheme(name);
+            cache.valid = true;
+        }
+        return cache.scheme;
     }
 
     // Return cached schemes (copy is cheap due to implicit sharing of QColor)

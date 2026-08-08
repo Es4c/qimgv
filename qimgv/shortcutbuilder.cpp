@@ -1,5 +1,7 @@
 #include "shortcutbuilder.h"
 
+#include <QStringList>
+
 //------------------------------------------------------------------------------
 QString ShortcutBuilder::fromEvent(QInputEvent *event) {
     if (!event)
@@ -100,16 +102,21 @@ QString ShortcutBuilder::modifierKeys(QInputEvent *event) {
     const auto &modsMap = inputMap->modifiers();
     const auto flags = event->modifiers();
 
-    QString result;
-    result.reserve(16);
-
+    // 先收集再排序: QHash 迭代顺序受随机哈希种子影响, 跨进程不稳定,
+    // 会导致生成的快捷键串与默认值(如 "Ctrl+Shift+S")错位而匹配失败
+    QStringList names;
+    names.reserve(modsMap.size());
     for (auto it = modsMap.cbegin(); it != modsMap.cend(); ++it) {
-        if (flags.testFlag(it.value())) {
-            result += it.key();
-            result += '+';
-        }
+        if (flags.testFlag(it.value()))
+            names += it.key();
     }
 
+    if (names.isEmpty())
+        return {};
+
+    names.sort();
+    QString result = names.join(QLatin1Char('+'));
+    result += QLatin1Char('+');
     return result;
 }
 
