@@ -4,13 +4,10 @@
 #include <QString>
 #include <list>
 #include <memory>
-#include <shared_mutex>
-#include <vector>
-#include <atomic>
 #include <mutex>
+#include <shared_mutex>
 
 #include "sourcecontainers/image.h"
-#include "components/cache/cacheitem.h"
 
 class Cache {
 public:
@@ -26,7 +23,7 @@ public:
 private:
     struct Node {
         QString key;
-        std::shared_ptr<CacheItem> item;
+        std::shared_ptr<Image> item;
     };
 
     using ListIt = std::list<Node>::iterator;
@@ -34,7 +31,6 @@ private:
 private:
     void moveToFront(ListIt it);
     void evictLRUItems();
-    void processAccessQueue();
 
 private:
     size_t mMaxCacheSize;
@@ -43,11 +39,4 @@ private:
     QHash<QString, ListIt> items;
 
     mutable std::shared_mutex mRWLock;
-
-    // fast path queue（减少写锁争用）
-    std::vector<QString> mAccessQueue;
-    std::mutex mAccessQueueMutex;
-    std::atomic<bool> mNeedProcessQueue{false};
-
-    static constexpr size_t mQueueThreshold = 10;
 };

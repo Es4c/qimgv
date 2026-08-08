@@ -8,7 +8,6 @@ target_sources(qimgv PRIVATE
     actionmanager/actionmanager.cpp
 
     cache/cache.cpp
-    cache/cacheitem.cpp
 
     loader/loader.cpp
     loader/loaderrunnable.cpp

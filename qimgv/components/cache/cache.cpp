@@ -11,34 +11,14 @@ bool Cache::contains(const QString &path) const {
 }
 
 std::shared_ptr<Image> Cache::get(const QString &path) {
-    std::shared_ptr<Image> result;
+    std::unique_lock lock(mRWLock);
 
-    {
-        std::shared_lock lock(mRWLock);
+    auto it = items.find(path);
+    if (it == items.end()) return nullptr;
 
-        auto it = items.find(path);
-        if (it == items.end()) return nullptr;
-
-        // fast path：只记录访问
-        {
-            std::lock_guard qlock(mAccessQueueMutex);
-            mAccessQueue.push_back(path);
-
-            if (mAccessQueue.size() > mQueueThreshold) {
-                mNeedProcessQueue.store(true, std::memory_order_release);
-            }
-        }
-
-        result = it.value()->item->getContents();
-    }
-
-    // 慢路径：批量处理 LRU 顺序
-    if (mNeedProcessQueue.exchange(false, std::memory_order_acq_rel)) {
-        std::unique_lock lock(mRWLock);
-        processAccessQueue();
-    }
-
-    return result;
+    // 命中即提升到 MRU 头，保证淘汰时 LRU 顺序始终新鲜
+    moveToFront(it.value());
+    return it.value()->item;
 }
 
 bool Cache::insert(const std::shared_ptr<Image> &img) {
@@ -50,13 +30,13 @@ bool Cache::insert(const std::shared_ptr<Image> &img) {
 
     auto it = items.find(path);
     if (it != items.end()) {
-        // ✅ 原子原地更新，严格保持原有返回语义
-        it.value()->item->setContents(img);
+        // 原地更新，保持原有返回语义（false = 已存在，非新增）
+        it.value()->item = img;
         moveToFront(it.value());
         return false;
     }
 
-    lruList.push_front({path, std::make_shared<CacheItem>(img)});
+    lruList.push_front({path, img});
     items.insert(path, lruList.begin());
 
     if (items.size() > mMaxCacheSize) {
@@ -87,27 +67,7 @@ void Cache::moveToFront(ListIt it) {
     lruList.splice(lruList.begin(), lruList, it);
 }
 
-void Cache::processAccessQueue() {
-    std::vector<QString> localQueue;
-
-    {
-        std::lock_guard qlock(mAccessQueueMutex);
-        if (mAccessQueue.empty()) return;
-        localQueue.swap(mAccessQueue);
-    }
-
-    for (const auto &key : localQueue) {
-        auto it = items.find(key);
-        if (it != items.end()) {
-            moveToFront(it.value());
-        }
-    }
-}
-
 void Cache::evictLRUItems() {
-    // 可选：保持 LRU 顺序新鲜
-    processAccessQueue();
-
     while (items.size() > mMaxCacheSize) {
         auto lastIt = std::prev(lruList.end());
 
