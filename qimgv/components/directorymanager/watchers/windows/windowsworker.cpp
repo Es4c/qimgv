@@ -7,7 +7,7 @@
 
 namespace {
 constexpr qsizetype kInitialBufferSize = 131072;            // 128KB
-constexpr qsizetype kMaxBufferSize = 16 * 1024 * 1024;      // 16MB，防止无限膨胀
+constexpr qsizetype kMaxBufferSize = static_cast<qsizetype>(16) * 1024 * 1024;      // 16MB，防止无限膨胀
 constexpr qsizetype kNetworkBufferSize = 65536;             // 64KB，网络目录(SMB)缓冲上限
 constexpr qsizetype kMaxFileNameLength = 4096;              // 单条文件名上限（WCHAR）
 constexpr int kShrinkQuietReads = 4;                        // 连续多少次低利用率读取后回收缓冲
