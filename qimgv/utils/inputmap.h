@@ -7,7 +7,8 @@ class InputMap {
 public:
     InputMap();
     static InputMap *getInstance();
-    const QHash<quint32, QString> &keys();
+    // 按 scancode 查键名; 找不到返回空串
+    QString keyNameForScancode(quint32 scanCode) const;
     const QHash<QString, Qt::KeyboardModifier> &modifiers();
     static const QString& keyNameCtrl();
     static const QString& keyNameAlt();

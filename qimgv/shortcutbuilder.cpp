@@ -131,7 +131,7 @@ bool ShortcutBuilder::isModifier(Qt::Key key) {
 
 //------------------------------------------------------------------------------
 QString ShortcutBuilder::fromEventNativeScanCode(QKeyEvent *event) {
-    QString sequence = inputMap->keys().value(event->nativeScanCode());
+    QString sequence = inputMap->keyNameForScancode(event->nativeScanCode());
     if (sequence.isEmpty())
         return {};
 

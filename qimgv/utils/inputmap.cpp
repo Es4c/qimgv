@@ -14,8 +14,10 @@ InputMap *InputMap::getInstance() {
     return inputMap;
 }
 
-const QHash<quint32, QString> &InputMap::keys() {
-    return keyMap;
+QString InputMap::keyNameForScancode(quint32 scanCode) const {
+    // constFind 零拷贝查找, 避免返回整个 keyMap
+    const auto it = keyMap.constFind(scanCode);
+    return it == keyMap.cend() ? QString() : it.value();
 }
 
 const QHash<QString, Qt::KeyboardModifier> &InputMap::modifiers() {

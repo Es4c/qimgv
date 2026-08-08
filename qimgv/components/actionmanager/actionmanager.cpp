@@ -161,9 +161,7 @@ void ActionManager::removeAllShortcuts(const QString &actionName) {
 }
 
 QString ActionManager::keyForNativeScancode(quint32 scanCode) const {
-    const auto &keys = inputMap->keys();
-    const auto it = keys.constFind(scanCode);
-    return it == keys.cend() ? QString() : it.value();
+    return inputMap->keyNameForScancode(scanCode);
 }
 
 void ActionManager::resetDefaults() {
