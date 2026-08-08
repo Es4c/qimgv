@@ -12,6 +12,13 @@ ClickZoneOverlay::ClickZoneOverlay(FloatingWidgetContainer *parent)
     pixmapLeft = loadPixmap(":/res/icons/common/overlay/arrow_left_50.png");
     pixmapRight = loadPixmap(":/res/icons/common/overlay/arrow_right_50.png");
 
+    // 一次性缓存两张图的半尺寸（逻辑像素），绘制时不再重复除法
+    const qreal scale = (hiResPixmaps) ? (2.0 * pixmapDrawScale) : 2.0;
+    pixLeftHalfW = static_cast<qreal>(pixmapLeft.width()) / scale;
+    pixLeftHalfH = static_cast<qreal>(pixmapLeft.height()) / scale;
+    pixRightHalfW = static_cast<qreal>(pixmapRight.width()) / scale;
+    pixRightHalfH = static_cast<qreal>(pixmapRight.height()) / scale;
+
     connect(settings, &Settings::settingsChanged, this, &ClickZoneOverlay::readSettings);
     readSettings();
 
@@ -102,40 +109,28 @@ void ClickZoneOverlay::paintEvent(QPaintEvent *event) {
         return;
     QPainter p(this);
     p.setOpacity(isPressed ? 0.06f : 0.10f);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);   // 只在绘制时设置一次
     QBrush brush(QColor(200, 200, 200), Qt::SolidPattern);
 
     if (activeZone == HIGHLIGHT_LEFT) {
         p.fillRect(mLeftZone, brush);
-        drawPixmap(p, pixmapLeft, mLeftZone);
+        drawPixmap(p, pixmapLeft, mLeftZone, pixLeftHalfW, pixLeftHalfH);
     }
     if (activeZone == HIGHLIGHT_RIGHT) {
         p.fillRect(mRightZone, brush);
-        drawPixmap(p, pixmapRight, mRightZone);
+        drawPixmap(p, pixmapRight, mRightZone, pixRightHalfW, pixRightHalfH);
     }
 }
 
-void ClickZoneOverlay::drawPixmap(QPainter &p, const QPixmap& pixmap, const QRect& rect) {
+void ClickZoneOverlay::drawPixmap(QPainter &p, const QPixmap& pixmap, const QRect& rect,
+                                  qreal pixHalfW, qreal pixHalfH) {
     p.setOpacity(isPressed ? 0.37f : 0.5f);
-    p.setRenderHint(QPainter::SmoothPixmapTransform);
 
     const qreal halfW = static_cast<qreal>(rect.width()) * 0.5;
     const qreal halfH = static_cast<qreal>(rect.height()) * 0.5;
 
-    QPointF pos;
-
-    if (hiResPixmaps) {
-        const qreal pixHalfW = static_cast<qreal>(pixmap.width())  / (2.0 * pixmapDrawScale);
-        const qreal pixHalfH = static_cast<qreal>(pixmap.height()) / (2.0 * pixmapDrawScale);
-
-        pos = QPointF(rect.left() + halfW - pixHalfW,
+    const QPointF pos(rect.left() + halfW - pixHalfW,
                       rect.top()  + halfH - pixHalfH);
-    } else {
-        const qreal pixHalfW = static_cast<qreal>(pixmap.width())  * 0.5;
-        const qreal pixHalfH = static_cast<qreal>(pixmap.height()) * 0.5;
-
-        pos = QPointF(rect.left() + halfW - pixHalfW,
-                      rect.top()  + halfH - pixHalfH);
-    }
 
     p.drawPixmap(pos, pixmap);
 }

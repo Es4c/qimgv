@@ -8,12 +8,11 @@ class ZoomIndicatorOverlay : public OverlayWidget {
 public:
     explicit ZoomIndicatorOverlay(FloatingWidgetContainer *parent = nullptr);
 
+    using OverlayWidget::show;   // 恢复基类 show() 重载（show(int) 会隐藏基类版本）
     void setScale(qreal scale);
-    void show();
     void show(int duration);
 
 protected:
-    void recalculateGeometry() override;
     void paintEvent(QPaintEvent *event) override;
 
 private:

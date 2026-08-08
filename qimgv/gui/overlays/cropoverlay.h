@@ -69,6 +69,7 @@ private:
     qreal dpr = 1.0;
     bool lockAspectRatio = false;
     CursorAction cursorAction = CursorAction::None;
+    CursorAction lastCursorAction = CursorAction::None; // 上次设置的光标动作，避免重复 setCursor
 
     // 绘制资源
     int handleSize = 8;

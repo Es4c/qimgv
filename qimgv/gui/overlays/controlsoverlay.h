@@ -21,6 +21,7 @@ private:
     ActionButton *minimizeButton, *windowModeButton, *closeButton;
     QGraphicsOpacityEffect *fadeEffect;
     QPropertyAnimation *fadeAnimation;
+    QPropertyAnimation *fadeInAnimation;
     QSize contentsSize();
     void fitToContents();
     void recalculateGeometryInternal();

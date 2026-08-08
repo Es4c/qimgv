@@ -39,5 +39,6 @@ private slots:
 private:
     Ui::VideoControls *ui;
     int lastPosition;
+    int lastDuration;
     PlaybackMode mode;
 };

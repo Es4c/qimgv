@@ -18,6 +18,7 @@ VideoControls::VideoControls(FloatingWidgetContainer *parent) :
     ui->muteButton->setAction("toggleMute");
 
     lastPosition = -1;
+    lastDuration = -1;
 
     readSettings();
     connect(settings, &Settings::settingsChanged, this, &VideoControls::readSettings);
@@ -63,6 +64,9 @@ static QString formatSeconds(int value, PlaybackMode mode, bool forPosition=fals
 }
 
 void VideoControls::setPlaybackDuration(int duration) {
+    if(duration == lastDuration)
+        return;   // 时长未变则跳过，避免重复 setRange/setText
+    lastDuration = duration;
     QString durationStr = formatSeconds(duration, mode, false);
     ui->seekBar->setRange(0, duration - 1);
     ui->durationLabel->setText(durationStr);

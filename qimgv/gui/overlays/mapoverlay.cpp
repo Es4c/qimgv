@@ -1,6 +1,5 @@
 #include "mapoverlay.h"
 #include <QPropertyAnimation>
-#include "settings.h"
 #include <memory>
 
 class MapOverlay::MapOverlayPrivate : public QObject {
@@ -11,6 +10,9 @@ public:
     void moveMainImage(float xPos, float yPos);
 
     QPen outlinePen;
+    // 缓存画笔/画刷，避免每次 paintEvent 重复构造
+    QBrush outerBrush;
+    QBrush innerBrush;
     float xSpeedDiff, ySpeedDiff;
     QRectF outerRect, innerRect;
     QRectF windowRect, drawingRect;
@@ -19,14 +21,17 @@ public:
     float opacity;
     float innerOffset;
     int margin;
+    // 当前可见状态，用于跳过重复的动画启动
+    bool visibleState = false;
 
     std::unique_ptr<QPropertyAnimation> opacityAnimation;
-    std::unique_ptr<QPropertyAnimation> transitionAnimation;
     MapOverlay::Location location;
 };
 
 MapOverlay::MapOverlayPrivate::MapOverlayPrivate(MapOverlay *qq)
-    : q(qq), size(120), opacity(0.0f), innerOffset(-1), margin(20) {
+    : q(qq), size(120), opacity(0.0f), innerOffset(-1), margin(20),
+      outerBrush(QColor(40, 40, 40, 160), Qt::SolidPattern),
+      innerBrush(QColor(180, 180, 180, 255), Qt::SolidPattern) {
     outlinePen.setColor(QColor(180, 180, 180, 255));
     location = MapOverlay::RightBottom;
 }
@@ -80,10 +85,6 @@ MapOverlay::MapOverlay(QWidget *parent) : QWidget(parent),
     d->opacityAnimation->setEasingCurve(QEasingCurve::OutSine);
     d->opacityAnimation->setDuration(150);
 
-    d->transitionAnimation = std::make_unique<QPropertyAnimation>(this, "y");
-    d->transitionAnimation->setDuration(200);
-    d->transitionAnimation->setEasingCurve(QEasingCurve::OutExpo);
-
     this->setVisible(true);
 }
 
@@ -111,45 +112,23 @@ void MapOverlay::setOpacity(float opacity) {
 }
 
 void MapOverlay::animateVisible(bool isVisible) {
-    if(isVisible) this->setOpacity(1.0f);
-    else {
-        d->opacityAnimation->setEndValue(isVisible ? 1.0f : 0.0f);
+    // 状态未变则跳过，避免每次 updateMap 都重启动画
+    if(d->visibleState == isVisible)
+        return;
+    d->visibleState = isVisible;
 
-        switch(location()) {
-            case MapOverlay::LeftTop:
-            case MapOverlay::RightTop:
-                if(isVisible) {
-                    d->transitionAnimation->setStartValue(0);
-                    d->transitionAnimation->setEndValue(margin());
-                } else {
-                    d->transitionAnimation->setStartValue(margin());
-                    d->transitionAnimation->setEndValue(0);
-                }
-                break;
-            case MapOverlay::RightBottom:
-            case MapOverlay::LeftBottom:
-                int h = parentWidget()->height();
-                int offset = static_cast<int>(d->outerRect.height() + margin());
-
-                if(isVisible) {
-                    d->transitionAnimation->setStartValue(h);
-                    d->transitionAnimation->setEndValue(h - offset);
-                } else {
-                    d->transitionAnimation->setStartValue(h - offset);
-                    d->transitionAnimation->setEndValue(h);
-                }
-                break;
-        }
-
+    if(isVisible) {
+        d->opacityAnimation->stop();
+        this->setOpacity(1.0f);
+    } else {
+        d->opacityAnimation->setEndValue(0.0f);
         d->opacityAnimation->start();
-        //d->transitionAnimation->start();
     }
-    //if (QWidget::isVisible() == isVisible) // already in this state
-    //    return;
 }
 
 void MapOverlay::resize(int size) {
-    QWidget::resize(size, size);
+    d->size = size;
+    QWidget::resize(size, size); // 触发 resizeEvent -> updatePosition()
 }
 
 void MapOverlay::setY(int y) {
@@ -162,16 +141,15 @@ int MapOverlay::y() const {
 
 void MapOverlay::paintEvent(QPaintEvent *event) {
     Q_UNUSED(event)
+    if(d->opacity <= 0.0f)   // 完全透明时无需绘制
+        return;
 
     QPainter painter(this);
-    QBrush outerBrush(QColor(40, 40, 40, 160), Qt::SolidPattern);
-    QBrush innerBrush(QColor(180, 180, 180, 255), Qt::SolidPattern);
-
     painter.setOpacity(d->opacity);
     painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
 
-    painter.fillRect(d->outerRect, outerBrush);
-    painter.fillRect(d->innerRect, innerBrush);
+    painter.fillRect(d->outerRect, d->outerBrush);
+    painter.fillRect(d->innerRect, d->innerBrush);
 
     painter.setPen(d->outlinePen);
     painter.drawRect(d->outerRect);
@@ -207,15 +185,22 @@ void MapOverlay::updatePosition() {
     setGeometry(x, y, d->size + 1, d->size + 1);
 }
 
+namespace {
+// 图片是否超出窗口
 bool contains(const QRectF &real, const QRectF &expected) {
     return real.width() <= expected.width() && real.height() <= expected.height();
+}
 }
 
 void MapOverlay::updateMap(const QRectF &drawingRect) {
     if(!isEnabled())
         return;
 
-    QRectF windowRect = parentWidget()->rect();
+    const QRectF windowRect = parentWidget()->rect();
+
+    // 绘制区域与窗口矩形均未变时无需重算（避免每帧重复做缩放/除法/重绘）
+    if(d->drawingRect == drawingRect && d->windowRect == windowRect)
+        return;
 
     imageDoesNotFit = !contains(drawingRect, windowRect);
     animateVisible(imageDoesNotFit && visibilityEnabled);

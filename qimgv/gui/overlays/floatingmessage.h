@@ -3,7 +3,6 @@
 #include <QTimer>
 #include <QLabel>
 #include "gui/customwidgets/overlaywidget.h"
-#include "settings.h"
 
 namespace Ui {
 class FloatingMessage;
@@ -44,7 +43,4 @@ private:
 
 protected:
     void mousePressEvent(QMouseEvent *event);
-
-private slots:
-    void readSettings();
 };

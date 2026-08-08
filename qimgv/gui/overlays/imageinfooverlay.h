@@ -26,4 +26,5 @@ private:
     Ui::ImageInfoOverlay *ui;
     QList<EntryInfoItem*> entries;
     QLabel entryStub;
+    QHash<QString, QString> m_lastInfo;   // 上次展示的信息，用于跳过重复刷新
 };

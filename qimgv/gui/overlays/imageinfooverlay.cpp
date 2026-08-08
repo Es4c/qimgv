@@ -1,5 +1,6 @@
 #include "imageinfooverlay.h"
 #include "ui_imageinfooverlay.h"
+#include <QStringList>
 
 ImageInfoOverlay::ImageInfoOverlay(FloatingWidgetContainer *parent) :
     OverlayWidget(parent),
@@ -23,6 +24,15 @@ ImageInfoOverlay::~ImageInfoOverlay() {
 }
 
 void ImageInfoOverlay::setExifInfo(const QHash<QString, QString>& info) {
+    // 信息未变则直接返回，避免隐藏/重排全部条目造成的布局抖动
+    if (info == m_lastInfo)
+        return;
+    m_lastInfo = info;
+
+    // QHash 迭代顺序不确定，按键排序保证条目显示顺序稳定
+    QStringList keys = info.keys();
+    keys.sort();
+
     // existing widgets are owned by QWidget hierarchy; we keep pool to avoid frequent realloc
     for (EntryInfoItem *entry : std::as_const(entries)) {
         ui->entryLayout->removeWidget(entry);
@@ -30,21 +40,19 @@ void ImageInfoOverlay::setExifInfo(const QHash<QString, QString>& info) {
     }
 
     qsizetype entryCount = entries.count();
-    if(entryCount < info.count()) {
-        for(qsizetype i = entryCount; i < info.count(); i++) {
+    if(entryCount < keys.count()) {
+        for(qsizetype i = entryCount; i < keys.count(); i++) {
             entries.append(new EntryInfoItem(this));
         }
         entryCount = entries.count();
     }
 
-    QHash<QString, QString>::const_iterator i = info.constBegin();
     qsizetype entryIdx = 0;
-    while(i != info.constEnd()) {
+    for (const QString &key : keys) {
         EntryInfoItem *item = entries.at(entryIdx);
-        item->setInfo(i.key(), i.value());
+        item->setInfo(key, info.value(key));
         ui->entryLayout->addWidget(item);
         item->show();
-        ++i;
         ++entryIdx;
     }
 

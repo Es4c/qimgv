@@ -35,7 +35,8 @@ RenameOverlay::~RenameOverlay() {
 void RenameOverlay::show() {
     selectName();
     OverlayWidget::show();
-    QTimer::singleShot(0, ui->fileName, SLOT(setFocus()));
+    // 显示后再聚焦，确保行编辑可编辑
+    QTimer::singleShot(0, ui->fileName, [this]() { ui->fileName->setFocus(); });
 }
 
 void RenameOverlay::hide() {

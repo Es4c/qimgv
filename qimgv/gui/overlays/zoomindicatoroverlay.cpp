@@ -29,6 +29,8 @@ void ZoomIndicatorOverlay::updateCache()
 {
     if (m_text.isEmpty())
         return;
+    // 每次刷新度量，保证字体变化（HiDPI/样式表）后仍与当前 font() 一致
+    m_fm = QFontMetrics(font());
     m_textWidth = m_fm.horizontalAdvance(m_text);
     m_ascent = m_fm.ascent();
     m_descent = m_fm.descent();
@@ -43,16 +45,6 @@ void ZoomIndicatorOverlay::setScale(qreal scale)
     updateCache();      // 一次性计算所有尺寸
     recalculateGeometry();
     update();           // 触发重绘
-}
-
-void ZoomIndicatorOverlay::recalculateGeometry()
-{
-    OverlayWidget::recalculateGeometry();
-}
-
-void ZoomIndicatorOverlay::show()
-{
-    OverlayWidget::show();
 }
 
 void ZoomIndicatorOverlay::show(int duration)

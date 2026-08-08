@@ -22,27 +22,12 @@ FloatingMessage::FloatingMessage(FloatingWidgetContainer *parent) :
     this->setAccessibleName("FloatingMessage");
     connect(&visibilityTimer, &QTimer::timeout, this, &FloatingMessage::hideAnimated);
 
-    readSettings();
-
-    connect(settings, &Settings::settingsChanged, this, &FloatingMessage::readSettings);
-
     if(parent)
         setContainerSize(parent->size());
 }
 
 FloatingMessage::~FloatingMessage() {
     delete ui;
-}
-
-void FloatingMessage::readSettings() {
-    /*
-    // don't interfere with the main panel
-    if(settings->panelEnabled() && settings->panelPosition() == PanelHPosition::PANEL_BOTTOM) {
-        preferredPosition = FloatingWidgetPosition::TOP;
-    } else {
-        preferredPosition = FloatingWidgetPosition::BOTTOM;
-    }
-    */
 }
 
 void FloatingMessage::showMessage(const QString &text, FloatingWidgetPosition position, FloatingMessageIcon icon, int duration) {

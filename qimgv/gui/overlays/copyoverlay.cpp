@@ -151,8 +151,8 @@ void CopyOverlay::createDefaultPaths() {
                 continue;
             }
             QString qpath(home + "/" + mfi.fileName());
-            QFileInfo qinfo(qpath);
-            if (qinfo.permission(QFile::WriteUser | QFile::ReadGroup)) {
+            // entryInfoList 返回的 QFileInfo 已包含路径信息，直接复用，避免二次 stat
+            if (mfi.permission(QFile::WriteUser | QFile::ReadGroup)) {
                 paths << qpath;
             }
         }
@@ -167,8 +167,12 @@ bool CopyOverlay::focusNextPrevChild(bool mode) {
 void CopyOverlay::keyPressEvent(QKeyEvent *event) {
     event->accept();
     QString key = actionManager->keyForNativeScancode(event->nativeScanCode());
-    if(shortcuts.contains(key))
-        requestFileOperation(pathWidgets.at(shortcuts[key])->directory());
-    else
+    if(shortcuts.contains(key)) {
+        const int idx = shortcuts.value(key);
+        // 路径数量可能少于快捷键数量，越界时直接忽略
+        if(idx >= 0 && idx < pathWidgets.count())
+            requestFileOperation(pathWidgets.at(idx)->directory());
+    } else {
         actionManager->processEvent(event);
+    }
 }

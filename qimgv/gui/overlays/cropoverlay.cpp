@@ -70,6 +70,7 @@ void CropOverlay::setAspectRatio(const QPointF& ratio) {
 }
 
 void CropOverlay::hide() {
+    if(isHidden()) return;   // 已隐藏则跳过，避免重复清空选区/重绘
     clearSelection();
     FloatingWidget::hide();
 }
@@ -132,6 +133,9 @@ void CropOverlay::updateHandlePositions() {
     const qreal drawHalf = drawSize * 0.5;
     const qreal hitHalf = hitSize * 0.5;
     const QRectF& r = selectionDrawRect;
+    // 中心点只算一次
+    const qreal cx = r.center().x();
+    const qreal cy = r.center().y();
     
     // 优化4：使用setRect避免临时对象构造
     // 绘制手柄（较小）
@@ -139,20 +143,20 @@ void CropOverlay::updateHandlePositions() {
     drawHandles[1].setRect(r.right() - drawHalf, r.top() - drawHalf, drawSize, drawSize);
     drawHandles[2].setRect(r.left() - drawHalf, r.bottom() - drawHalf, drawSize, drawSize);
     drawHandles[3].setRect(r.right() - drawHalf, r.bottom() - drawHalf, drawSize, drawSize);
-    drawHandles[4].setRect(r.left() - drawHalf, r.center().y() - drawHalf, drawSize, drawSize);
-    drawHandles[5].setRect(r.right() - drawHalf, r.center().y() - drawHalf, drawSize, drawSize);
-    drawHandles[6].setRect(r.center().x() - drawHalf, r.top() - drawHalf, drawSize, drawSize);
-    drawHandles[7].setRect(r.center().x() - drawHalf, r.bottom() - drawHalf, drawSize, drawSize);
+    drawHandles[4].setRect(r.left() - drawHalf, cy - drawHalf, drawSize, drawSize);
+    drawHandles[5].setRect(r.right() - drawHalf, cy - drawHalf, drawSize, drawSize);
+    drawHandles[6].setRect(cx - drawHalf, r.top() - drawHalf, drawSize, drawSize);
+    drawHandles[7].setRect(cx - drawHalf, r.bottom() - drawHalf, drawSize, drawSize);
     
     // 命中手柄（较大）
     hitHandles[0].setRect(r.left() - hitHalf, r.top() - hitHalf, hitSize, hitSize);
     hitHandles[1].setRect(r.right() - hitHalf, r.top() - hitHalf, hitSize, hitSize);
     hitHandles[2].setRect(r.left() - hitHalf, r.bottom() - hitHalf, hitSize, hitSize);
     hitHandles[3].setRect(r.right() - hitHalf, r.bottom() - hitHalf, hitSize, hitSize);
-    hitHandles[4].setRect(r.left() - hitHalf, r.center().y() - hitHalf, hitSize, hitSize);
-    hitHandles[5].setRect(r.right() - hitHalf, r.center().y() - hitHalf, hitSize, hitSize);
-    hitHandles[6].setRect(r.center().x() - hitHalf, r.top() - hitHalf, hitSize, hitSize);
-    hitHandles[7].setRect(r.center().x() - hitHalf, r.bottom() - hitHalf, hitSize, hitSize);
+    hitHandles[4].setRect(r.left() - hitHalf, cy - hitHalf, hitSize, hitSize);
+    hitHandles[5].setRect(r.right() - hitHalf, cy - hitHalf, hitSize, hitSize);
+    hitHandles[6].setRect(cx - hitHalf, r.top() - hitHalf, hitSize, hitSize);
+    hitHandles[7].setRect(cx - hitHalf, r.bottom() - hitHalf, hitSize, hitSize);
 }
 
 QPointF CropOverlay::mapToImage(const QPointF& widgetPos) const {
@@ -453,6 +457,9 @@ void CropOverlay::mouseReleaseEvent(QMouseEvent *event) {
 }
 
 void CropOverlay::setCursorByAction(CursorAction action) {
+    if (action == lastCursorAction)
+        return;   // 光标未变则跳过，避免高频 setCursor
+    lastCursorAction = action;
     switch (action) {
         case CursorAction::DragTopLeft:     
         case CursorAction::DragBottomRight: setCursor(Qt::SizeFDiagCursor); break;

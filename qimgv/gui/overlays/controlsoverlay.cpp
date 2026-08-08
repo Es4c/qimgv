@@ -38,6 +38,13 @@ ControlsOverlay::ControlsOverlay(FloatingWidgetContainer *parent) :
     fadeAnimation->setEndValue(0);
     fadeAnimation->setEasingCurve(QEasingCurve::OutQuart);
 
+    // 淡入动画：show() 时从透明淡入，避免之前显示后不可见的 bug
+    fadeInAnimation = new QPropertyAnimation(fadeEffect, "opacity");
+    fadeInAnimation->setDuration(230);
+    fadeInAnimation->setStartValue(0.0f);
+    fadeInAnimation->setEndValue(1.0f);
+    fadeInAnimation->setEasingCurve(QEasingCurve::OutQuart);
+
     if(parent)
         setContainerSize(parent->size());
     //this->show();
@@ -45,6 +52,9 @@ ControlsOverlay::ControlsOverlay(FloatingWidgetContainer *parent) :
 
 void ControlsOverlay::show() {
     fadeEffect->setOpacity(0.0);
+    fadeAnimation->stop();
+    fadeInAnimation->stop();
+    fadeInAnimation->start();   // 从透明淡入
     FloatingWidget::show();
 }
 
@@ -72,10 +82,14 @@ void ControlsOverlay::enterEvent(QEvent *event) {
 #endif
     Q_UNUSED(event)
     fadeAnimation->stop();
+    fadeInAnimation->stop();
     fadeEffect->setOpacity(1.0);
 }
 
 void ControlsOverlay::leaveEvent(QEvent *event) {
     Q_UNUSED(event)
+    fadeInAnimation->stop();
+    // 从当前透明度淡出，避免快速进出时跳变
+    fadeAnimation->setStartValue(fadeEffect->opacity());
     fadeAnimation->start();
 }

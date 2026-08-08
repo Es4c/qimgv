@@ -35,6 +35,8 @@ bool ImageInfoOverlayProxy::isHidden() {
 }
 
 void ImageInfoOverlayProxy::setExifInfo(const QHash<QString, QString>& _info) {
+    if(stateBuf.info == _info)
+        return;   // 内容未变则跳过拷贝与刷新
     stateBuf.info = _info;
     if(overlay && !overlay->isHidden())
         overlay->setExifInfo(_info);

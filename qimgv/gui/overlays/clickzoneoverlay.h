@@ -33,6 +33,9 @@ private:
     QPixmap loadPixmap(const QString& path);
     QPixmap pixmapLeft;
     QPixmap pixmapRight;
+    // 缓存两张图的一半尺寸（逻辑像素），避免每次绘制重复除法
+    qreal pixLeftHalfW = 0.0, pixLeftHalfH = 0.0;
+    qreal pixRightHalfW = 0.0, pixRightHalfH = 0.0;
     QRect mLeftZone, mRightZone;
     qreal dpr = 1.0;
     qreal pixmapDrawScale = 1.0;
@@ -42,7 +45,8 @@ private:
     bool drawZones = true;
     ActiveHighlightZone activeZone = HIGHLIGHT_NONE;
 
-    void drawPixmap(QPainter &p, const QPixmap& pixmap, const QRect& rect);
+    void drawPixmap(QPainter &p, const QPixmap& pixmap, const QRect& rect,
+                    qreal pixHalfW, qreal pixHalfH);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
