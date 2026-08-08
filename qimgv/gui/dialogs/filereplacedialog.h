@@ -48,6 +48,6 @@ private:
     void initializeDialog();
     
     Ui::FileReplaceDialog *ui;
-    bool multi;
+    bool multi = false;
     DialogResult result;
 };

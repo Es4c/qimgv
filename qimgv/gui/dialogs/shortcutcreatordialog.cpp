@@ -47,15 +47,16 @@ void ShortcutCreatorDialog::onShortcutEdited()
         ui->warningLabel->setText("");
 }
 
-void ShortcutCreatorDialog::setAction(QString action)
+void ShortcutCreatorDialog::setAction(const QString &action)
 {
     auto cbox = ui->actionsComboBox;
-    if(action.startsWith("s:")) {
-        action = action.remove(0,2);
+    QString trimmed = action;
+    if(trimmed.startsWith("s:")) {
+        trimmed.remove(0,2);
         cbox = ui->scriptsComboBox;
         ui->scriptsRadioButton->setChecked(true);
     }
-    int index = cbox->findText(action);
+    int index = cbox->findText(trimmed);
     if(index != -1)
         cbox->setCurrentIndex(index);
 }

@@ -3,7 +3,6 @@
 
 FileReplaceDialog::FileReplaceDialog(QWidget *parent) : QDialog(parent), ui(new Ui::FileReplaceDialog) {
     ui->setupUi(this);
-    multi = false;
     initializeDialog();
 }
 

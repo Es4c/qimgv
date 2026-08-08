@@ -243,7 +243,7 @@ void SettingsDialog::readSettings() {
     // language
     QString langName = langs.value(settings->language());
     if(langName.isEmpty() || ui->langComboBox->findText(langName) == -1)
-        ui->langComboBox->setCurrentText("en_US");
+        ui->langComboBox->setCurrentText(langs.value("en_US"));
     else
         ui->langComboBox->setCurrentText(langName);
 
@@ -271,11 +271,8 @@ void SettingsDialog::readSettings() {
 }
 //------------------------------------------------------------------------------
 void SettingsDialog::saveSettings() {
-    // wait for all background stuff to finish
-    if(QThreadPool::globalInstance()->activeThreadCount()) {
-        QThreadPool::globalInstance()->waitForDone();
-    }
-
+    // 不再阻塞等待全局线程池：后台加载/缩放任务仅读一次设置（如 smoothUpscaling），
+    // 等待会把保存设置卡在无关的图片后台任务上，故移除
     settings->setLoopSlideshow(ui->loopSlideshowCheckBox->isChecked());
     settings->setFullscreenMode(ui->fullscreenCheckBox->isChecked());
     if(ui->fitModeWindow->isChecked())

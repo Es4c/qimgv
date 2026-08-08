@@ -34,7 +34,6 @@ void ScriptEditorDialog::initializeDialog() {
 // --- 修改行 32：initializeEditMode 参数改为 const & ---
 void ScriptEditorDialog::initializeEditMode(const QString &name, const Script &script) {
     this->setWindowTitle(tr("Edit"));
-    this->onNameChanged(ui->nameLineEdit->text());
     editTarget = name;
     connect(ui->nameLineEdit, &QLineEdit::textChanged, this, &ScriptEditorDialog::onNameChanged);
     ui->nameLineEdit->setText(name);
@@ -82,12 +81,10 @@ void ScriptEditorDialog::onNameChanged(const QString &name) {
 }
 
 void ScriptEditorDialog::selectScriptPath() {
-    QFileDialog dialog;
-    QString file;
 #ifdef _WIN32
-    file = dialog.getOpenFileName(this, tr("Select an executable/script"), "", "Executable/script (*.exe *.bat)");
+    QString file = QFileDialog::getOpenFileName(this, tr("Select an executable/script"), "", "Executable/script (*.exe *.bat)");
 #else
-    file = dialog.getOpenFileName(this, tr("Select a script file"), "", "Shell script (*.sh)");
+    QString file = QFileDialog::getOpenFileName(this, tr("Select a script file"), "", "Shell script (*.sh)");
 #endif
     if(!file.isEmpty()) {
         ui->pathLineEdit->setText("\"" + file + "\"" + " %file%");

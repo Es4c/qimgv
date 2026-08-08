@@ -2,6 +2,7 @@
 #define PRINTDIALOG_H
 
 #include <QDialog>
+#include <QImage>
 #include <QtPrintSupport/QPrinter>
 #include <memory>
 #include "settings.h"
@@ -37,6 +38,7 @@ private:
     std::shared_ptr<const QImage> img = nullptr;
     QPrinter pdfPrinter, *printer = nullptr;
     bool printPdfDefault = false;
+    QImage cachedScaledImg; // 按目标像素尺寸缓存的预览缩放图，几何不变时复用
 };
 
 #endif // PRINTDIALOG_H

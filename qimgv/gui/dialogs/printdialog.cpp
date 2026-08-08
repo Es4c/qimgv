@@ -71,11 +71,12 @@ void PrintDialog::setupConnections() {
     connect(ui->printerListComboBox, &QComboBox::currentTextChanged, this, &PrintDialog::onPrinterSelected);
     connect(ui->landscape, &QRadioButton::toggled, this, &PrintDialog::setLandscape);
     connect(ui->fitToPageCheckBox, &QCheckBox::toggled, this, &PrintDialog::updatePreview);
-    connect(ui->color, &QRadioButton::toggled, this, &PrintDialog::updatePreview);
+    connect(ui->grayscale, &QRadioButton::toggled, this, &PrintDialog::updatePreview);
 }
 
 void PrintDialog::setImage(std::shared_ptr<const QImage> _img) {
     img = std::move(_img);
+    cachedScaledImg = QImage(); // 图像变更后缩放缓存失效
     updatePreview();
 }
 
@@ -107,7 +108,11 @@ void PrintDialog::updatePreview() {
                                imgRect.width() * scale, imgRect.height() * scale).toRect());
     QPixmap pagePixmap(fullRectScaled.size() * qApp->devicePixelRatio());
     pagePixmap.setDevicePixelRatio(qApp->devicePixelRatio());
-    auto scaledImg = img->scaled(imgRectScaled.size() * qApp->devicePixelRatio(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    // ⭐ 缩放按目标像素尺寸缓存：几何不变时复用，避免每次切换控件都对大图平滑重采样
+    const QSize previewImgSize = imgRectScaled.size() * qApp->devicePixelRatio();
+    if(cachedScaledImg.size() != previewImgSize)
+        cachedScaledImg = img->scaled(previewImgSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    auto scaledImg = cachedScaledImg;
     if(ui->grayscale->isChecked())
         scaledImg = std::move(scaledImg).convertToFormat(QImage::Format_Grayscale8);
     scaledImg.setDevicePixelRatio(qApp->devicePixelRatio());
@@ -176,7 +181,8 @@ void PrintDialog::print() {
 }
 
 void PrintDialog::exportPdf() {
-    if(!img || pdfPrinter.outputFileName().isEmpty()) {
+    // 输出文件名恒为 " " 哨兵，isEmpty 判空不成立；只要没图才关闭
+    if(!img) {
         close();
         return;
     }
