@@ -95,7 +95,8 @@ public slots:
 
 signals:
     void scalingRequested(QSize size, ScalingFilter filter);
-    void scaleChanged(qreal scale);
+    // silent=true：非交互缩放（打开图片自动适配、窗口缩放等），供指示器决定是否闪动
+    void scaleChanged(qreal scale, bool silent);
     void sourceSizeChanged(QSize size);
     void imageAreaChanged(QRect rect);
     void draggedOut();
@@ -163,6 +164,7 @@ private:
     bool loopPlayback;
     bool mIsFullscreen;
     bool scrollBarWorkaround;
+    bool mSilentScaleChange = false;   // 非交互缩放期间置 true，scaleChanged 带上标记
     bool useFixedZoomLevels;
     bool trackpadDetection;
     bool dragsEnabled;
@@ -222,6 +224,8 @@ private:
     void fitWindowStretch();
     void fitFree(float scale);
     void applyFitMode();
+    // 打开图片/动画后应用初始适配，期间 scaleChanged 标记为 silent
+    void applyInitialFit();
     void updateFitWindowScale();
     void updateFitWindowStretchScale();
     void updateMinScale();

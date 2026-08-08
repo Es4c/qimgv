@@ -17,9 +17,13 @@ void FloatingWidget::setContainerSize(QSize newContainer) {
     if(container == newContainer)
         return;
     container = newContainer;
-    // 隐藏时无需重算几何；显示前由 showEvent() 补齐
-    if(isVisible())
+    // 隐藏时仅标记几何过期，显示前由 showEvent() 补齐重算
+    if(isVisible()) {
         recalculateGeometry();
+        mGeometryDirty = false;
+    } else {
+        mGeometryDirty = true;
+    }
 }
 
 void FloatingWidget::onContainerResized(QSize size) {
@@ -27,9 +31,13 @@ void FloatingWidget::onContainerResized(QSize size) {
 }
 
 void FloatingWidget::showEvent(QShowEvent *event) {
-    // 隐藏期间容器尺寸可能已变化（setContainerSize 在隐藏时跳过重算），
-    // 显示前补齐几何，避免各子类各自处理 show()
-    recalculateGeometry();
+    // 只有隐藏期间容器尺寸变化（或首次显示）导致几何过期时才补一次重算；
+    // 内容变化由各子类自行 recalculateGeometry，避免淡入淡出等反复 show 时
+    // 每次都重复 setGeometry
+    if(mGeometryDirty) {
+        recalculateGeometry();
+        mGeometryDirty = false;
+    }
     QWidget::showEvent(event);
 }
 

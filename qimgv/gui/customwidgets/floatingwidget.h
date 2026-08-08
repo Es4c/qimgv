@@ -41,6 +41,9 @@ private:
     // size of whatever widget we are overlayed on
     QSize container;
     bool mAcceptKeyboardFocus = false;
+    // 几何是否已过期：隐藏期间容器变化 / 首次显示前为 true，
+    // 由 showEvent() 在真正重算后清除，避免每次 show 都重复 setGeometry
+    bool mGeometryDirty = true;
 
 private slots:
     void onContainerResized(QSize container);

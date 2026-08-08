@@ -165,15 +165,17 @@ void ViewerWidget::disableVideoPlayer() {
     }
 }
 
-void ViewerWidget::onScaleChanged(qreal scale) {
-    if(scale != 1.0f) {
-        zoomIndicator->setScale(scale);
-        if(settings->zoomIndicatorMode() == ZoomIndicatorMode::INDICATOR_ENABLED)
-            zoomIndicator->show();
-        else if((settings->zoomIndicatorMode() == ZoomIndicatorMode::INDICATOR_AUTO))
-            zoomIndicator->show(1500);
-    } else {
+void ViewerWidget::onScaleChanged(qreal scale, bool silent) {
+    zoomIndicator->setScale(scale);   // 始终同步比例数值
+    if(scale == 1.0f) {
         zoomIndicator->hide();
+        return;
+    }
+    if(settings->zoomIndicatorMode() == ZoomIndicatorMode::INDICATOR_ENABLED) {
+        zoomIndicator->show();
+    } else if(settings->zoomIndicatorMode() == ZoomIndicatorMode::INDICATOR_AUTO && !silent) {
+        // 打开图片/窗口缩放等非交互适配不闪动，仅由用户主动缩放才淡入淡出
+        zoomIndicator->show(1500);
     }
 }
 

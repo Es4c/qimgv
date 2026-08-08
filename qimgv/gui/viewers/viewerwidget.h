@@ -66,7 +66,7 @@ private:
     bool eventFilter(QObject *object, QEvent *event) override;
 
 private slots:
-    void onScaleChanged(qreal);
+    void onScaleChanged(qreal, bool);
     void onVideoPlaybackFinished();
     void onAnimationPlaybackFinished();
 

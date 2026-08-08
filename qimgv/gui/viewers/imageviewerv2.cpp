@@ -157,7 +157,9 @@ void ImageViewerV2::onDPRChanged()
         pixmapItem.show();
         pixmapItem.update();
         updateMinScale();
+        mSilentScaleChange = true;
         applyFitMode();
+        mSilentScaleChange = false;
         requestScaling();
         update();
     }
@@ -455,17 +457,7 @@ void ImageViewerV2::showAnimation(const std::shared_ptr<ImageAnimated>& animatio
 
     updateMinScale();
 
-    if (!keepFitMode || imageFitMode == FIT_FREE)
-        imageFitMode = imageFitModeDefault;
-
-    if (mViewLock == LOCK_NONE) {
-        applyFitMode();
-    } else {
-        imageFitMode = FIT_FREE;
-        fitFree(lockedScale);
-        if (mViewLock == LOCK_ALL)
-            applySavedViewportPos();
-    }
+    applyInitialFit();
 
     startAnimation();
 }
@@ -489,17 +481,7 @@ void ImageViewerV2::showImage(const QPixmap& newPixmap)
 
     updateMinScale();
 
-    if (!keepFitMode || imageFitMode == FIT_FREE)
-        imageFitMode = imageFitModeDefault;
-
-    if (mViewLock == LOCK_NONE) {
-        applyFitMode();
-    } else {
-        imageFitMode = FIT_FREE;
-        fitFree(lockedScale);
-        if (mViewLock == LOCK_ALL)
-            applySavedViewportPos();
-    }
+    applyInitialFit();
 
     requestScaling();
     update();
@@ -524,17 +506,7 @@ void ImageViewerV2::showImage(QPixmap&& newPixmap)
 
     updateMinScale();
 
-    if (!keepFitMode || imageFitMode == FIT_FREE)
-        imageFitMode = imageFitModeDefault;
-
-    if (mViewLock == LOCK_NONE) {
-        applyFitMode();
-    } else {
-        imageFitMode = FIT_FREE;
-        fitFree(lockedScale);
-        if (mViewLock == LOCK_ALL)
-            applySavedViewportPos();
-    }
+    applyInitialFit();
 
     requestScaling();
     update();
@@ -735,7 +707,9 @@ void ImageViewerV2::setExpandImage(bool mode)
 {
     expandImage = mode;
     updateMinScale();
+    mSilentScaleChange = true;
     applyFitMode();
+    mSilentScaleChange = false;
     requestScaling();
 }
 
@@ -926,7 +900,7 @@ void ImageViewerV2::doZoom(float newScale, bool center)
     if (center)
         centerOn(sceneCenterBefore);
 
-    emit scaleChanged(newScale);
+    emit scaleChanged(newScale, mSilentScaleChange);
 }
 
 void ImageViewerV2::swapToOriginalPixmap()
@@ -1099,6 +1073,27 @@ void ImageViewerV2::fitFree(float scale)
 
         zoomAnchored(scale);
     }
+}
+
+void ImageViewerV2::applyInitialFit()
+{
+    // 打开图片后的自动适配属于非交互缩放：期间 scaleChanged 标记 silent，
+    // 缩放指示器据此只同步数值、不触发淡入淡出
+    mSilentScaleChange = true;
+
+    if (!keepFitMode || imageFitMode == FIT_FREE)
+        imageFitMode = imageFitModeDefault;
+
+    if (mViewLock == LOCK_NONE) {
+        applyFitMode();
+    } else {
+        imageFitMode = FIT_FREE;
+        fitFree(lockedScale);
+        if (mViewLock == LOCK_ALL)
+            applySavedViewportPos();
+    }
+
+    mSilentScaleChange = false;
 }
 
 void ImageViewerV2::applyFitMode()
@@ -1503,7 +1498,9 @@ void ImageViewerV2::resizeEvent(QResizeEvent* event)
         if (imageFitMode == FIT_FREE || imageFitMode == FIT_ORIGINAL) {
             adjustViewport();
         } else {
+            mSilentScaleChange = true;
             applyFitMode();
+            mSilentScaleChange = false;
         }
 
         update();
@@ -1524,8 +1521,11 @@ void ImageViewerV2::showEvent(QShowEvent* event)
     // 这和原来的 processEvents 目的一致：在控件显示后再重新布局/缩放。
     if (imageFitMode == FIT_ORIGINAL) {
         QTimer::singleShot(0, this, [this]() {
-            if (imageFitMode == FIT_ORIGINAL)
+            if (imageFitMode == FIT_ORIGINAL) {
+                mSilentScaleChange = true;
                 applyFitMode();
+                mSilentScaleChange = false;
+            }
         });
     }
 }
