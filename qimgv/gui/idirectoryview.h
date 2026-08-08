@@ -16,7 +16,7 @@ public:
     virtual void focusOn(int) = 0;
     virtual void focusOnSelection() = 0;
     virtual QList<int> selection() = 0;
-    virtual void setDirectoryPath(QString path) = 0;
+    virtual void setDirectoryPath(const QString &path) = 0;
     virtual void insertItem(int index) = 0;
     virtual void removeItem(int index) = 0;
     virtual void reloadItem(int index) = 0;
@@ -25,7 +25,7 @@ public:
 //signals
     virtual void itemActivated(int) = 0;
     virtual void draggedOut() = 0;
-    virtual void draggedToBookmarks(QList<int>) = 0;
+    virtual void draggedToBookmarks(const QList<int> &indices) = 0;
     virtual void draggedOver(int) = 0;
     virtual void droppedInto(const QMimeData*, QObject*, int) = 0;
 };

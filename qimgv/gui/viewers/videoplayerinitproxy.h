@@ -56,6 +56,7 @@ private:
     QString libFile;
     QStringList libDirs;
     bool playerLibInitialized = false;
+    bool playerInitFailed = false;
 
 private slots:
     void onSettingsChanged();

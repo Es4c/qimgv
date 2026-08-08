@@ -165,11 +165,17 @@ void ContextMenu::paintEvent(QPaintEvent *event) {
 }
 
 void ContextMenu::keyPressEvent(QKeyEvent *event) {
-    quint32 nativeScanCode = event->nativeScanCode();
-    QString key = actionManager->keyForNativeScancode(nativeScanCode);
+    // 热路径: 用 Qt key 枚举判断 Esc/Enter(零哈希), 其余按键只走一次 processEvent 查找
+    switch(event->key()) {
+        case Qt::Key_Escape:
+            hide();
+            break;
+        case Qt::Key_Return:
+        case Qt::Key_Enter:
+            return;
+        default:
+            break;
+    }
     // todo: keyboard navigation (Up/Down/Enter)
-    if(key == "Esc")
-        hide();
-    if(key != "Enter")
-        actionManager->processEvent(event);
+    actionManager->processEvent(event);
 }

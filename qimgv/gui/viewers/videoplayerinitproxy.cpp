@@ -66,6 +66,10 @@ inline bool VideoPlayerInitProxy::initPlayer() {
     if(player)
         return true;
 
+    // 插件已确认加载失败(符号缺失/创建失败)时短路, 避免每次 showVideo 重复 resolve
+    if(playerInitFailed)
+        return false;
+
     // 只在未初始化时搜索和设置一次，避免 QLibrary::setFileName 导致 DLL 重加载
     if(!playerLibInitialized) {
         QFileInfo pluginFile;
@@ -77,37 +81,27 @@ inline bool VideoPlayerInitProxy::initPlayer() {
                 break;
             }
         }
-        
+
         if(!playerLibInitialized) {
             return false;
         }
-    }
-    
-    // 检查是否找到插件
-    if(playerLib.fileName().isEmpty()) {
-        QStringList searchPaths;
-        for(const auto& dir : libDirs) {
-            searchPaths << (dir + "/" + libFile);
-        }
-        qDebug() << "Could not find plugin" << libFile << "in search paths:" << searchPaths;
-        return false;
     }
 
     // 加载插件库
     typedef VideoPlayer* (*createPlayerWidgetFn)();
     createPlayerWidgetFn fn = reinterpret_cast<createPlayerWidgetFn>(playerLib.resolve("CreatePlayerWidget"));
     if(!fn) {
-        qDebug() << "Could not resolve CreatePlayerWidget function in:" << playerLib.fileName();
+        playerInitFailed = true;
         return false;
     }
-    
+
     // 创建播放器实例
     VideoPlayer* pl = fn();
     if(!pl) {
-        qDebug() << "CreatePlayerWidget returned null for:" << playerLib.fileName();
+        playerInitFailed = true;
         return false;
     }
-    
+
     player.reset(pl);
 
     // 配置播放器
@@ -120,12 +114,12 @@ inline bool VideoPlayerInitProxy::initPlayer() {
     layout->addWidget(player.get());
     player->hide();
     setFocusProxy(player.get());
-    
+
     // 连接信号
-    connect(player.get(), SIGNAL(durationChanged(int)), this, SIGNAL(durationChanged(int)));
-    connect(player.get(), SIGNAL(positionChanged(int)), this, SIGNAL(positionChanged(int)));
-    connect(player.get(), SIGNAL(videoPaused(bool)),    this, SIGNAL(videoPaused(bool)));
-    connect(player.get(), SIGNAL(playbackFinished()),   this, SIGNAL(playbackFinished()));
+    connect(player.get(), &VideoPlayer::durationChanged,   this, &VideoPlayer::durationChanged);
+    connect(player.get(), &VideoPlayer::positionChanged,   this, &VideoPlayer::positionChanged);
+    connect(player.get(), &VideoPlayer::videoPaused,       this, &VideoPlayer::videoPaused);
+    connect(player.get(), &VideoPlayer::playbackFinished,  this, &VideoPlayer::playbackFinished);
 
     // 安装事件过滤器
     if(eventFilterObj)
@@ -187,13 +181,17 @@ bool VideoPlayerInitProxy::muted() {
 void VideoPlayerInitProxy::volumeUp() {
     if(!player) return;
     player->volumeUp();
-    settings->setVolume(player->volume());
+    const int vol = player->volume();
+    if(settings->volume() != vol)
+        settings->setVolume(vol);
 }
 
 void VideoPlayerInitProxy::volumeDown() {
     if(!player) return;
     player->volumeDown();
-    settings->setVolume(player->volume());
+    const int vol = player->volume();
+    if(settings->volume() != vol)
+        settings->setVolume(vol);
 }
 
 void VideoPlayerInitProxy::setVolume(int vol) {
