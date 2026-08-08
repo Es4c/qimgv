@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QtPlugin>
 #include <QList>
 #include <memory>
 
@@ -9,10 +8,10 @@ class QMimeData;
 
 class IDirectoryView {
 public:
-    virtual ~IDirectoryView();
+    virtual ~IDirectoryView() = default;
 
     virtual void populate(int) = 0;
-    virtual void select(QList<int>) = 0;
+    virtual void select(const QList<int>&) = 0;
     virtual void select(int) = 0;
     virtual void focusOn(int) = 0;
     virtual void focusOnSelection() = 0;
@@ -30,5 +29,3 @@ public:
     virtual void draggedOver(int) = 0;
     virtual void droppedInto(const QMimeData*, QObject*, int) = 0;
 };
-
-Q_DECLARE_INTERFACE(IDirectoryView, "IDirectoryView")

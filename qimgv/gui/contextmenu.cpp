@@ -167,12 +167,9 @@ void ContextMenu::paintEvent(QPaintEvent *event) {
 void ContextMenu::keyPressEvent(QKeyEvent *event) {
     quint32 nativeScanCode = event->nativeScanCode();
     QString key = actionManager->keyForNativeScancode(nativeScanCode);
-    // todo: keyboard navigation
-    if(key == "Up") {}
-    if(key == "Down") {}
+    // todo: keyboard navigation (Up/Down/Enter)
     if(key == "Esc")
         hide();
-    if(key == "Enter") {}
-    else
+    if(key != "Enter")
         actionManager->processEvent(event);
 }

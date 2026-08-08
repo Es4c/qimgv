@@ -3,8 +3,6 @@
 target_sources(qimgv PRIVATE
     centralwidget.cpp
     contextmenu.cpp
-    flowlayout.cpp
-    idirectoryview.cpp
     mainwindow.cpp
 
     customwidgets/actionbutton.cpp
