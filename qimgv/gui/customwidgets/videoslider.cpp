@@ -18,9 +18,11 @@ void VideoSlider::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void VideoSlider::setValueAtCursor(QPoint pos) {
-    if(orientation() == Qt::Vertical)
-        setValue(minimum() + ((maximum() - minimum()) * (height() - pos.y())) / height() );
-    else
-        setValue(minimum() + ((maximum() - minimum()) * pos.x()) / width() );
-    emit sliderMovedX(value());
+    const int newValue = (orientation() == Qt::Vertical)
+        ? minimum() + ((maximum() - minimum()) * (height() - pos.y())) / height()
+        : minimum() + ((maximum() - minimum()) * pos.x()) / width();
+    if(newValue != value()) {
+        setValue(newValue);
+        emit sliderMovedX(newValue);
+    }
 }

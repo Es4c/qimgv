@@ -92,6 +92,8 @@ SSideBarItem::SSideBarItem(const QString& icon, const QString& name, QWidget *pa
 }
 
 void SSideBarItem::setHighlighted(bool mode) {
+    if(mHighlighted == mode)
+        return;
     mHighlighted = mode;
     this->setProperty("checked", mHighlighted);
     style()->unpolish(this);

@@ -27,23 +27,26 @@ void IconButton::setChecked(bool mode) {
 void IconButton::mousePressEvent(QMouseEvent *event) {
     Q_UNUSED(event)
     if(mCheckable) {
-        setChecked(!property("checked").toBool());
+        setChecked(!mChecked); // setChecked 内部已处理 unpolish/polish
         emit toggled(mChecked);
-    } else {
+        return;
+    }
+    if(!mPressed) {
         mPressed = true;
         setProperty("pressed", true);
+        style()->unpolish(this);
+        style()->polish(this);
     }
-    style()->unpolish(this);
-    style()->polish(this);
 }
 
 void IconButton::mouseReleaseEvent(QMouseEvent *event) {
     Q_UNUSED(event)
+    const bool wasPressed = mPressed;
     mPressed = false;
     if(rect().contains(event->position().toPoint()) && !mCheckable) {
         emit clicked();
     }
-    if(!mChecked) {
+    if(!mChecked && wasPressed) {
         setProperty("pressed", false);
         style()->unpolish(this);
         style()->polish(this);

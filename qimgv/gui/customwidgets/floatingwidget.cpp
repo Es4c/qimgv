@@ -14,8 +14,12 @@ QSize FloatingWidget::containerSize() {
 }
 
 void FloatingWidget::setContainerSize(QSize newContainer) {
+    if(container == newContainer)
+        return;
     container = newContainer;
-    recalculateGeometry();
+    // 隐藏时无需重算几何；下次 show() 时再补一次
+    if(isVisible())
+        recalculateGeometry();
 }
 
 void FloatingWidget::onContainerResized(QSize size) {

@@ -46,7 +46,8 @@ private:
     IconColorMode colorMode = ICON_COLOR_THEME;
     bool hiResPixmap = false;
     QPoint iconOffset;
-    std::unique_ptr<QPixmap> pixmap; // 使用智能指针管理内存
+    std::shared_ptr<QPixmap> pixmap;   // 指向共享缓存中的（已着色）pixmap
+    std::shared_ptr<QPixmap> rawPixmap; // 指向共享缓存中的原始 pixmap，重着色时以此为底
     qreal dpr = 1.0;
     qreal pixmapDrawScale = 1.0;
 };

@@ -4,7 +4,7 @@ ColorSelectorButton::ColorSelectorButton(QWidget *parent) : ClickableLabel(paren
     connect(this, &ColorSelectorButton::clicked, this, &ColorSelectorButton::showColorSelector);
 }
 
-void ColorSelectorButton::setColor(QColor &newColor) {
+void ColorSelectorButton::setColor(const QColor &newColor) {
     mColor = newColor;
     update();
 }

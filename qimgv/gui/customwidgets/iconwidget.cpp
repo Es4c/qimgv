@@ -1,5 +1,26 @@
 #include "iconwidget.h"
 
+#include <QHash>
+
+namespace {
+    // 共享图标缓存：同一 (路径, dpr, 颜色) 只解码/着色一次，
+    // 避免每个图标实例重复从资源加载并重复做全图填充重着色
+    using IconCache = QHash<QString, std::shared_ptr<QPixmap>>;
+
+    IconCache& iconCache() {
+        static IconCache cache;
+        return cache;
+    }
+
+    // 缓存键：路径 + dpr + 着色参数。SOURCE 模式不着色，使用固定后缀
+    QString cacheKey(const QString &path, qreal dpr, IconColorMode mode, const QColor &color) {
+        const QString colorPart = (mode == ICON_COLOR_SOURCE)
+                                      ? QStringLiteral("-")
+                                      : color.name(QColor::HexArgb);
+        return path + QLatin1Char('\n') + QString::number(dpr) + QLatin1Char('\n') + colorPart;
+    }
+}
+
 IconWidget::IconWidget(QWidget *parent)
     : QWidget(parent)
 {
@@ -8,12 +29,15 @@ IconWidget::IconWidget(QWidget *parent)
     connect(settings, &Settings::settingsChanged, this, &IconWidget::onSettingsChanged);
 }
 
-IconWidget::~IconWidget() = default; // std::unique_ptr 会自动释放内存
+IconWidget::~IconWidget() = default; // std::shared_ptr 会自动释放内存
 
 void IconWidget::onSettingsChanged() {
-    if(colorMode == ICON_COLOR_THEME && color != settings->colorScheme().icons) {
-        color = settings->colorScheme().icons;
-        applyColor();
+    if(colorMode == ICON_COLOR_THEME) {
+        const QColor newColor = settings->colorScheme().icons;
+        if(color != newColor) {
+            color = newColor;
+            applyColor();
+        }
     }
 }
 
@@ -26,28 +50,36 @@ void IconWidget::setIconPath(const QString &path) {
 
 void IconWidget::loadIcon() {
     auto path = iconPath;
-    pixmap.reset(); // 释放旧对象
-    
+
     if(dpr >= (1.0 + 0.001)) {
-        path.replace(".", "@2x.");
+        // 只替换扩展名前的最后一个点，避免路径中其他点被误伤
+        const qsizetype dot = path.lastIndexOf(QLatin1Char('.'));
+        if(dot >= 0)
+            path.replace(dot, 1, "@2x.");
         hiResPixmap = true;
-        pixmap = std::make_unique<QPixmap>(path);
-        if(dpr >= (2.0 - 0.001))
-            pixmapDrawScale = dpr;
-        else
-            pixmapDrawScale = 2.0;
-        pixmap->setDevicePixelRatio(pixmapDrawScale);
+        pixmapDrawScale = (dpr >= (2.0 - 0.001)) ? dpr : 2.0;
     } else {
         hiResPixmap = false;
-        pixmap = std::make_unique<QPixmap>(path);
         pixmapDrawScale = dpr;
     }
-    
-    if(pixmap->isNull()) {
-        pixmap.reset();
-    } else {
-        applyColor();
+
+    const QString key = cacheKey(iconPath, dpr, ICON_COLOR_SOURCE, QColor());
+    IconCache &cache = iconCache();
+    auto it = cache.find(key);
+    if(it == cache.end()) {
+        auto loaded = std::make_shared<QPixmap>(path);
+        if(loaded->isNull()) {
+            rawPixmap.reset();
+            pixmap.reset();
+            update();
+            return;
+        }
+        loaded->setDevicePixelRatio(pixmapDrawScale);
+        it = cache.insert(key, std::move(loaded));
     }
+    rawPixmap = it.value();
+    pixmap = rawPixmap;
+    applyColor();
     update();
 }
 
@@ -84,9 +116,26 @@ void IconWidget::setColor(QColor color) {
 }
 
 void IconWidget::applyColor() {
-    if(!pixmap || pixmap->isNull() || colorMode == ICON_COLOR_SOURCE)
+    if(!rawPixmap || rawPixmap->isNull() || colorMode == ICON_COLOR_SOURCE)
         return;
-    ImageLib::recolor(*pixmap, color);
+
+    const QString key = cacheKey(iconPath, dpr, colorMode, color);
+    IconCache &cache = iconCache();
+    auto it = cache.find(key);
+    if(it != cache.end()) {
+        pixmap = it.value();
+        update();
+        return;
+    }
+
+    // 从原始图复制一份再着色，避免改动共享的缓存数据
+    auto recolored = std::make_shared<QPixmap>(rawPixmap->copy());
+    if(recolored->isNull())
+        return;
+    recolored->setDevicePixelRatio(pixmapDrawScale);
+    ImageLib::recolor(*recolored, color);
+    pixmap = cache.insert(key, std::move(recolored)).value();
+    update();
 }
 
 void IconWidget::paintEvent(QPaintEvent *event) {
