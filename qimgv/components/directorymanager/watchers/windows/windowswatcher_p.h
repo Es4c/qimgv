@@ -3,23 +3,23 @@
 
 #include "windowswatcher.h"
 #include "../directorywatcher_p.h"
+#include "windowsworker.h"
+#include <QQueue>
 #include <windows.h>
-#include <QString>
-#include <QDebug>
 
-class ScopedHandle;
-class WindowsWorker;
-
-// 优化：使用 QStringLiteral 和 asprintf 减少临时 QString 对象的构造开销
+// 错误信息构造（错误路径，非热点）
 static inline QString lastError()
 {
-    char buffer[1024];
     DWORD lastError = GetLastError(); // 保存原始错误码
-    DWORD res = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, nullptr, lastError, LANG_SYSTEM_DEFAULT, buffer, sizeof(buffer), nullptr);
+    wchar_t buffer[512];
+    DWORD res = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM, nullptr, lastError,
+                               LANG_SYSTEM_DEFAULT, buffer, 512, nullptr);
     if (res == 0) {
         return QString::number(lastError); // 使用保存的错误码
     }
-    return QString::asprintf("%s::%d: %s", __FILE__, __LINE__, buffer);
+    return QStringLiteral("%1::%2: %3").arg(
+        QString::fromLatin1(__FILE__), QString::number(__LINE__),
+        QString::fromWCharArray(buffer, static_cast<int>(res)));
 }
 
 class WindowsWatcherPrivate : public DirectoryWatcherPrivate
@@ -29,11 +29,14 @@ class WindowsWatcherPrivate : public DirectoryWatcherPrivate
 
 public:
     explicit WindowsWatcherPrivate(WindowsWatcher* qq);
-    ScopedHandle requestDirectoryHandle(const QString& path);
 
 public slots:
-    void dispatchNotify(const QString& fileName, DWORD action);
+    // ⭐ 批量派发
+    void dispatchNotify(const QVector<NotifyEvent>& events);
 
+private:
+    // ⭐ 使用队列保证 rename 配对正确（关键修复）
+    QQueue<QString> renameOldQueue;
 };
 
 #endif // WINDOWSWATCHER_P_H

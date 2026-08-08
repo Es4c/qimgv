@@ -5,7 +5,11 @@
 #include "../watcherworker.h"
 #include <windows.h>
 #include <QString>
+#include <QByteArray>
+#include <QVector>
+#include <QMetaType>
 #include <QMutex>
+#include <atomic>
 #include <algorithm>
 #include <utility>
 
@@ -44,6 +48,13 @@ private:
     HANDLE handle_ = INVALID_HANDLE_VALUE;
 };
 
+// 一次 ReadDirectoryChangesW 返回的单个通知条目
+struct NotifyEvent {
+    QString fileName;
+    DWORD action;
+};
+Q_DECLARE_METATYPE(NotifyEvent)
+
 class WindowsWorker : public WatcherWorker {
     Q_OBJECT
 public:
@@ -52,12 +63,13 @@ public:
     void run() override;
     void setRunning(bool running);
     void setWatchPath(const QString& path);
-    // 这些方法可被任意线程直接调用，内部通过原子变量和互斥锁保证线程安全
+    // 这些方法可被任意线程直接调用，句柄通过原子变量暴露，路径经互斥锁保护
     void requestDirectoryHandle(const QString& path);
     void cancelIo();
 
 signals:
-    void notifyEvent(const QString& fileName, DWORD action);
+    // ⭐ 批量派发，避免每个事件一个排队信号
+    void notifyEvents(const QVector<NotifyEvent>& events);
     void finished();
     void started();
 
@@ -65,7 +77,7 @@ private:
     HANDLE openDirectoryHandle(const QString& path);
 
     ScopedHandle hDirectory;
-    QString watchPath;
+    std::atomic<HANDLE> activeHandle{INVALID_HANDLE_VALUE};
     QString pendingPath;
     QByteArray buffer;
     std::atomic<bool> needsRestart{false};

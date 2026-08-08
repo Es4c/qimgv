@@ -4,8 +4,14 @@
 #include <cstddef>
 #include <QThread>
 
+namespace {
+constexpr qsizetype kInitialBufferSize = 131072;            // 128KB
+constexpr qsizetype kMaxBufferSize = 16 * 1024 * 1024;      // 16MB，防止无限膨胀
+constexpr qsizetype kMaxFileNameLength = 4096;              // 单条文件名上限（WCHAR）
+}
+
 WindowsWorker::WindowsWorker() {
-    buffer.resize(131072); // 128KB
+    buffer.resize(kInitialBufferSize);
 }
 
 void WindowsWorker::setRunning(bool running) {
@@ -19,13 +25,12 @@ void WindowsWorker::setRunning(bool running) {
 
 void WindowsWorker::setWatchPath(const QString& path) {
     QMutexLocker locker(&pathMutex);
-    watchPath = path;
     pendingPath = path;
 }
 
 void WindowsWorker::cancelIo() {
-    HANDLE hDir = hDirectory.get();
-    if (hDir) {
+    HANDLE hDir = activeHandle.load(std::memory_order_acquire);
+    if (hDir != INVALID_HANDLE_VALUE) {
         CancelIoEx(hDir, nullptr);
     }
 }
@@ -34,15 +39,18 @@ void WindowsWorker::requestDirectoryHandle(const QString& path) {
     bool shouldCancel = false;
     {
         QMutexLocker locker(&pathMutex);
-        if (path == pendingPath && hDirectory) return;
+        // 路径没变且句柄有效 → 无需重启
+        if (path == pendingPath &&
+            activeHandle.load(std::memory_order_acquire) != INVALID_HANDLE_VALUE) {
+            return;
+        }
         pendingPath = path;
-        shouldCancel = (hDirectory.get() != nullptr);
+        shouldCancel = (activeHandle.load(std::memory_order_acquire) != INVALID_HANDLE_VALUE);
     }
     needsRestart.store(true, std::memory_order_release);
     // 立即中断当前阻塞的 ReadDirectoryChangesW，让循环快速响应新路径
     if (shouldCancel) {
-        HANDLE hDir = hDirectory.get();
-        if (hDir) CancelIoEx(hDir, nullptr);
+        cancelIo();
     }
 }
 
@@ -79,17 +87,18 @@ void WindowsWorker::run() {
     QString currentPath;
     {
         QMutexLocker locker(&pathMutex);
-        currentPath = pendingPath.isEmpty() ? watchPath : pendingPath;
+        currentPath = pendingPath;
     }
 
-    if (!hDirectory && !currentPath.isEmpty()) {
+    if (hDirectory.get() == INVALID_HANDLE_VALUE && !currentPath.isEmpty()) {
         HANDLE hDir = openDirectoryHandle(currentPath);
-        if (hDir) {
+        if (hDir != INVALID_HANDLE_VALUE) {
             hDirectory = ScopedHandle(hDir);
+            activeHandle.store(hDir, std::memory_order_release);
         }
     }
 
-    if (!hDirectory) {
+    if (hDirectory.get() == INVALID_HANDLE_VALUE) {
         emit finished();
         return;
     }
@@ -115,17 +124,25 @@ void WindowsWorker::run() {
                 newPath = pendingPath;
             }
 
+            // 先使原子句柄失效，避免 GUI 线程 cancel 到旧句柄
+            activeHandle.store(INVALID_HANDLE_VALUE, std::memory_order_release);
             hDirectory.close();
 
             currentPath = newPath;
             HANDLE hDir = openDirectoryHandle(currentPath);
-            if (hDir) {
+            if (hDir != INVALID_HANDLE_VALUE) {
                 hDirectory = ScopedHandle(hDir);
+                activeHandle.store(hDir, std::memory_order_release);
             }
 
-            if (!hDirectory) {
+            if (hDirectory.get() == INVALID_HANDLE_VALUE) {
                 break;
             }
+            continue;
+        }
+
+        // ⭐ 发起阻塞调用前复查 restart 标志，缩小 TOCTOU 窗口
+        if (needsRestart.load(std::memory_order_acquire)) {
             continue;
         }
 
@@ -134,12 +151,14 @@ void WindowsWorker::run() {
         if (!ReadDirectoryChangesW(
                 hDirectory.get(),
                 buffer.data(),
-                buffer.size(),
+                static_cast<DWORD>(buffer.size()),
                 FALSE,
                 notifyFilter,
                 &bytesReturned,
                 nullptr,
                 nullptr)) {
+
+            const DWORD err = GetLastError();
 
             // ⭐ 被 cancel 且正在退出 → 直接结束
             if (!isRunning.load(std::memory_order_acquire)) {
@@ -148,6 +167,12 @@ void WindowsWorker::run() {
 
             // ⭐ 被 restart 打断
             if (needsRestart.load(std::memory_order_acquire)) {
+                continue;
+            }
+
+            // ⭐ 事件包超过缓冲 → 指数扩容重试，而不是让 watcher 静默退出
+            if (err == ERROR_NOTIFY_ENUM_DIR && buffer.size() < kMaxBufferSize) {
+                buffer.resize(std::min(buffer.size() * 2, kMaxBufferSize));
                 continue;
             }
 
@@ -160,16 +185,17 @@ void WindowsWorker::run() {
         }
 
         auto notify = reinterpret_cast<PFILE_NOTIFY_INFORMATION>(buffer.data());
+        QVector<NotifyEvent> batch;
 
         do {
             const auto len = notify->FileNameLength / sizeof(WCHAR);
-            if (len == 0 || len > 4096) break;
+            if (len > 0 && len <= kMaxFileNameLength) {
+                const QString fileName(
+                    reinterpret_cast<const QChar*>(notify->FileName),
+                    static_cast<qsizetype>(len));
 
-            const QString fileName(
-                reinterpret_cast<const QChar*>(notify->FileName),
-                static_cast<qsizetype>(len));
-
-            emit notifyEvent(fileName, notify->Action);
+                batch.append(NotifyEvent{fileName, notify->Action});
+            }
 
             if (notify->NextEntryOffset == 0) break;
 
@@ -177,9 +203,15 @@ void WindowsWorker::run() {
                 reinterpret_cast<std::byte*>(notify) + notify->NextEntryOffset);
 
         } while (true);
+
+        // ⭐ 批量派发，减少排队信号与事件循环次数
+        if (!batch.isEmpty()) {
+            emit notifyEvents(batch);
+        }
     }
 
     // ⭐ 确保 handle 关闭（避免悬挂）
+    activeHandle.store(INVALID_HANDLE_VALUE, std::memory_order_release);
     hDirectory.close();
 
     emit finished();
