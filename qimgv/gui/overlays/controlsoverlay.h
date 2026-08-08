@@ -14,7 +14,7 @@ public:
     explicit ControlsOverlay(FloatingWidgetContainer *parent);
 
 public slots:
-    void show();
+    void show() override;
 
 private:
     QHBoxLayout *layout;

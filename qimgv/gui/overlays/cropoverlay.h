@@ -38,8 +38,8 @@ signals:
     void cropSave();
 
 public slots:
-    void hide();
-    void show();
+    void hide() override;
+    void show() override;
     void onSelectionOutsideChange(const QRect& selection);
     void selectAll();
     void setAspectRatio(const QPointF& ratio);

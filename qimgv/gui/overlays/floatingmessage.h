@@ -27,7 +27,7 @@ public:
     void showMessage(const QString &text, FloatingWidgetPosition position, FloatingMessageIcon icon, int duration);
 
 public slots:
-    void show();
+    void show() override;
     void setText(const QString &text);
 
 private:

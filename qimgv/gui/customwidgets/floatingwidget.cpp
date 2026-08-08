@@ -72,6 +72,10 @@ void FloatingWidget::wheelEvent(QWheelEvent *event) {
     event->accept();
 }
 
+void FloatingWidget::show() {
+    QWidget::show();
+}
+
 void FloatingWidget::hide() {
     QWidget::hide();
     if(hasFocus() || isAncestorOf(qApp->focusWidget()))

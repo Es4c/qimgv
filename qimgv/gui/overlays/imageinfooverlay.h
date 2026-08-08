@@ -18,7 +18,7 @@ public:
     void setExifInfo(const QHash<QString, QString>&);
 
 public slots:
-    void show();
+    void show() override;
 
 protected:
     void wheelEvent(QWheelEvent *event);

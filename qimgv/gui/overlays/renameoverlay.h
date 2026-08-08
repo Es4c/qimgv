@@ -24,8 +24,8 @@ public:
 public slots:
     void setName(const QString &name);
     void setBackdropEnabled(bool mode);
-    void show();
-    void hide();
+    void show() override;
+    void hide() override;
 signals:
     void renameRequested(QString name);
 

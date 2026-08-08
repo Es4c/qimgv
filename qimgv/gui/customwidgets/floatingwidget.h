@@ -24,7 +24,11 @@ public:
     void setAcceptKeyboardFocus(bool mode);
 
 public slots:
-    void hide();
+    // show()/hide() 必须为虚函数：QWidget 的 show() 不是虚的，若此处不声明为虚，
+    // 通过 FloatingWidget* 调用会绕过子类实现（如 CropOverlay 的 mHiddenByHide
+    // 复位、OverlayWidget 的淡出处理），导致隐藏标记/动画状态不同步
+    virtual void show();
+    virtual void hide();
 
 protected:
     // called whenever container rectangle changes

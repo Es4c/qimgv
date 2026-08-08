@@ -38,8 +38,8 @@ public:
     void setFadeEnabled(bool mode);
 
 public slots:
-    void show();
-    void hide();
+    void show() override;
+    void hide() override;
     void hideAnimated();
 
 private:

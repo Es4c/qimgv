@@ -18,8 +18,8 @@ public:
     PanelPosition position();
 
 public slots:
-    void show();
-    void hide();
+    void show() override;
+    void hide() override;
 
 protected:
     QHBoxLayout *mLayout;

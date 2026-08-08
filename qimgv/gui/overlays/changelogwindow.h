@@ -22,8 +22,8 @@ public:
     void setText(const QString &text);
 
 public slots:
-    void show();
-    void hide();
+    void show() override;
+    void hide() override;
 
 protected:
     void paintEvent(QPaintEvent *);

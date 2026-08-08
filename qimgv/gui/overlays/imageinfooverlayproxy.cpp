@@ -13,8 +13,10 @@ ImageInfoOverlayProxy::~ImageInfoOverlayProxy() {
 
 void ImageInfoOverlayProxy::show() {
     init();
-    if(!stateBuf.info.isEmpty())
-        overlay->setExifInfo(stateBuf.info);
+    // 无论信息是否为空都要同步给 overlay：空信息同样要刷新（渲染
+    // "<no metadata found>"），否则隐藏期间切到无元数据图片再打开时，
+    // 会残留上一张图的旧条目（overlay 内部对非空且未变的信息会早退）
+    overlay->setExifInfo(stateBuf.info);
     overlay->show();
 }
 

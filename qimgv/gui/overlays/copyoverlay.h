@@ -28,8 +28,8 @@ public:
     CopyOverlayMode operationMode();
 
 public slots:
-    void show();
-    void hide();
+    void show() override;
+    void hide() override;
 
 signals:
     void copyRequested(QString);
