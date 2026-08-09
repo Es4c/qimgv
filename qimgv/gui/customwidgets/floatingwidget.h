@@ -35,12 +35,12 @@ protected:
     // this does nothing, reimplement to use
     virtual void recalculateGeometry();
     void showEvent(QShowEvent *event) override;
-    void paintEvent(QPaintEvent *event);
+    void paintEvent(QPaintEvent *event) override;
     void setContainerSize(QSize newContainer);
 
-    void mousePressEvent(QMouseEvent *event);
-    void mouseReleaseEvent(QMouseEvent *event);
-    void wheelEvent(QWheelEvent *event);
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
 private:
     // size of whatever widget we are overlayed on
     QSize container;

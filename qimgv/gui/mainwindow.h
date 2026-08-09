@@ -79,7 +79,7 @@ public:
     void onScalingFinished(const QPixmap& scaled);
     void showImage(const QPixmap& pixmap);
     void showAnimation(const std::shared_ptr<ImageAnimated>& image);
-    void showVideo(QString&& file);
+    void showVideo(QString file);
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     void setCurrentInfo(int fileIndex, int fileCount, const QString& filePath, const QString& fileName, QSize imageSize, qint64 fileSize, bool slideshow, bool shuffle, bool edited);
     void setExifInfo(const QHash<QString, QString> &info);

@@ -30,9 +30,9 @@ signals:
     void renameRequested(QString name);
 
 protected:
-    void keyPressEvent(QKeyEvent *event);
-    void mousePressEvent(QMouseEvent *event);
-    void recalculateGeometry();
+    void keyPressEvent(QKeyEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void recalculateGeometry() override;
 
 private slots:
     void rename();

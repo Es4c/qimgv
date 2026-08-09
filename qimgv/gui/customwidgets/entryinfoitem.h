@@ -15,7 +15,7 @@ public:
     void setInfo(const QString& _name, const QString& _value);
 
 protected:
-    void paintEvent(QPaintEvent *event);
+    void paintEvent(QPaintEvent *event) override;
 
 private:
     QHBoxLayout *layout;

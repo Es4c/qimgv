@@ -36,9 +36,9 @@ signals:
     void moveRequested(QString);
 
 protected:
-    void keyPressEvent(QKeyEvent *event);
+    void keyPressEvent(QKeyEvent *event) override;
 
-    bool focusNextPrevChild(bool);
+    bool focusNextPrevChild(bool) override;
 private slots:
     void requestFileOperation(const QString &path);
     void readSettings();

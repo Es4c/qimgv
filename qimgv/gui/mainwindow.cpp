@@ -228,7 +228,7 @@ void MW::showAnimation(const std::shared_ptr<ImageAnimated>& image) {
     updateCropPanelData();
 }
 
-void MW::showVideo(QString&& file) {
+void MW::showVideo(QString file) {
     if(settings->autoResizeWindow())
         preShowResize(QSize());
     viewerWidget->showVideo(std::move(file));

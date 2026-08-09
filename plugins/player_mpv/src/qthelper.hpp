@@ -287,9 +287,12 @@ static inline int set_property(mpv_handle *ctx, const QString &name,
     const int type = v.userType();
     if (type == QMetaType::QString) {
         // MPV_FORMAT_STRING 需要 char**（指向字符串的指针）
-        const QByteArray b = v.toString().toUtf8();
-        const char *str = b.constData();
-        return mpv_set_property(ctx, n.constData(), MPV_FORMAT_STRING, &str);
+        // mpv 只读取字符串内容、不修改, 用 char* 显式转 void* 消除
+        // bugprone-multi-level-implicit-pointer-conversion
+        QByteArray b = v.toString().toUtf8();
+        char *str = b.data();
+        return mpv_set_property(ctx, n.constData(), MPV_FORMAT_STRING,
+                                static_cast<void *>(&str));
     }
     if (type == QMetaType::Bool) {
         int flag = v.toBool() ? 1 : 0;

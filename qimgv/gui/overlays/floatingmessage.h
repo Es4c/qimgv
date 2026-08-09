@@ -42,5 +42,5 @@ private:
     FloatingMessageIcon currentIcon;
 
 protected:
-    void mousePressEvent(QMouseEvent *event);
+    void mousePressEvent(QMouseEvent *event) override;
 };

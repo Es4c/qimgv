@@ -28,9 +28,9 @@ private slots:
     void readSettings();
 
 protected:
-    void enterEvent(QEnterEvent *event);
-    void leaveEvent(QEvent *event);
-    void mouseMoveEvent(QMouseEvent *event);
+    void enterEvent(QEnterEvent *event) override;
+    void leaveEvent(QEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
 
 private:
     QBoxLayout *layout, *layoutRoot;

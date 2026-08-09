@@ -53,6 +53,6 @@ private slots:
     qreal opacity() const;
 
 protected:
-    virtual void recalculateGeometry();
+    void recalculateGeometry() override;
     FloatingWidgetPosition position;
 };

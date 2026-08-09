@@ -34,9 +34,9 @@ signals:
     void showScriptSettings();
 
 protected:
-    void mousePressEvent(QMouseEvent*);
-    void paintEvent(QPaintEvent *);
-    void keyPressEvent(QKeyEvent *event);
+    void mousePressEvent(QMouseEvent*) override;
+    void paintEvent(QPaintEvent *) override;
+    void keyPressEvent(QKeyEvent *event) override;
 private slots:
     void switchToMainPage();
     void switchToScriptsPage();

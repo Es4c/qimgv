@@ -2,6 +2,7 @@
 
 #include <QGuiApplication>
 #include <QCoreApplication>
+#include <QEvent>
 
 // Helper function to create QColor from RGB hex value efficiently
 // Avoids runtime string parsing overhead of QColor("#RRGGBB")
@@ -17,8 +18,16 @@ namespace {
         ColorScheme scheme;
     };
 
-    DynamicThemeCache systemThemeCache;
-    DynamicThemeCache customizedThemeCache;
+    // 缓存改为函数内 static: 惰性初始化, 消除命名空间级静态对象
+    // 初始化可能抛异常的警告及静态初始化顺序问题
+    DynamicThemeCache &systemThemeCache() {
+        static DynamicThemeCache cache;
+        return cache;
+    }
+    DynamicThemeCache &customizedThemeCache() {
+        static DynamicThemeCache cache;
+        return cache;
+    }
 
     // 构造动态主题(基于系统调色板), 仅 QPalette 变化时才需要重建
     ColorScheme buildDynamicScheme(ColorSchemes name) {
@@ -43,10 +52,24 @@ namespace {
         return ColorScheme(base);
     }
 
-    void invalidateDynamicThemeCaches(const QPalette &) {
-        systemThemeCache.valid = false;
-        customizedThemeCache.valid = false;
+    void invalidateDynamicThemeCaches() {
+        systemThemeCache().valid = false;
+        customizedThemeCache().valid = false;
     }
+
+    // 监听应用调色板变化: 替代 Qt6 已废弃的 QGuiApplication::paletteChanged 信号
+    class PaletteEventListener : public QObject {
+    public:
+        explicit PaletteEventListener(QObject *parent) : QObject(parent) {}
+        ~PaletteEventListener() override;
+    protected:
+        bool eventFilter(QObject *watched, QEvent *event) override {
+            if (event->type() == QEvent::ApplicationPaletteChange)
+                invalidateDynamicThemeCaches();
+            return QObject::eventFilter(watched, event);
+        }
+    };
+    PaletteEventListener::~PaletteEventListener() = default;
 
     // 首次请求动态主题时注册调色板变化监听, 之后缓存一直有效直到系统主题变化
     void registerPaletteListener() {
@@ -55,7 +78,8 @@ namespace {
             return;
         registered = true;
         if (auto *guiApp = qobject_cast<QGuiApplication *>(QCoreApplication::instance()))
-            QObject::connect(guiApp, &QGuiApplication::paletteChanged, &invalidateDynamicThemeCaches);
+            // 过滤器以 app 为父对象, 随应用生命周期存活
+            guiApp->installEventFilter(new PaletteEventListener(guiApp));
     }
 }
 
@@ -130,8 +154,8 @@ ColorScheme ThemeStore::colorScheme(ColorSchemes name) {
     if (name == COLORS_SYSTEM || name == COLORS_CUSTOMIZED) {
         // Optimization: Cache result, rebuilt only when palette changes
         registerPaletteListener();
-        DynamicThemeCache &cache = (name == COLORS_SYSTEM) ? systemThemeCache
-                                                           : customizedThemeCache;
+        DynamicThemeCache &cache = (name == COLORS_SYSTEM) ? systemThemeCache()
+                                                           : customizedThemeCache();
         if (!cache.valid) {
             cache.scheme = buildDynamicScheme(name);
             cache.valid = true;

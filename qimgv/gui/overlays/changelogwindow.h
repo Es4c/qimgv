@@ -26,9 +26,9 @@ public slots:
     void hide() override;
 
 protected:
-    void paintEvent(QPaintEvent *);
-    void wheelEvent(QWheelEvent *);
-    void keyPressEvent(QKeyEvent *);
+    void paintEvent(QPaintEvent *) override;
+    void wheelEvent(QWheelEvent *) override;
+    void keyPressEvent(QKeyEvent *) override;
 
 private:
     Ui::ChangelogWindow *ui;

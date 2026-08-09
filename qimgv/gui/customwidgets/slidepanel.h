@@ -27,7 +27,7 @@ protected:
     PanelPosition mPosition;
 
     // 保持虚函数接口，供容器 resize 时定位
-    virtual void recalculateGeometry();
+    void recalculateGeometry() override;
 
 private:
     bool mLayoutManaged = false;
