@@ -7,6 +7,8 @@
 #include "gui/customwidgets/floatingwidget.h"
 #include "gui/customwidgets/actionbutton.h"
 
+class QEnterEvent;
+
 class ControlsOverlay : public FloatingWidget
 {
     Q_OBJECT
