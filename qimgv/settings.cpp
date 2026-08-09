@@ -46,6 +46,11 @@ Settings::Settings(QObject *parent) : QObject(parent) {
     mFocusPointIn1to1ModeCacheValid = false;
     mImageScrollingCacheValid = false;
     mFolderEndActionCacheValid = false;
+    mVideoPlaybackCacheValid = false;
+    mJxlAnimationCacheValid = false;
+    mBackgroundOpacityCacheValid = false;
+    mSlideshowIntervalCacheValid = false;
+    mMpvBinaryCacheValid = false;
 }
 //------------------------------------------------------------------------------
 Settings::~Settings() {
@@ -82,6 +87,7 @@ void Settings::setupCache() {
     mTmpDir = std::make_unique<QDir>(QApplication::applicationDirPath() + "/cache");
     mTmpDir->mkpath(mTmpDir->absolutePath());
 #endif
+    mCachedTmpDir = mTmpDir->path() + "/";
 }
 //------------------------------------------------------------------------------
 void Settings::sync() {
@@ -89,8 +95,8 @@ void Settings::sync() {
     stateConf->sync();
 }
 //------------------------------------------------------------------------------
-QString Settings::tmpDir() {
-    return mTmpDir->path() + "/";
+const QString &Settings::tmpDir() {
+    return mCachedTmpDir;
 }
 //------------------------------------------------------------------------------
 // this here is temporarily, will be moved to some sort of theme manager class
@@ -257,6 +263,7 @@ void Settings::saveTheme() {
     themeConf->setValue("overlay",               mColorScheme.overlay.name());
     themeConf->setValue("tid",                   mColorScheme.tid);
     themeConf->endGroup();
+    themeConf->sync();
 }
 //------------------------------------------------------------------------------
 const ColorScheme& Settings::colorScheme() {
@@ -286,7 +293,9 @@ void Settings::fillVideoFormats() {
     mVideoFormatsMap.insert("video/x-flv",      "flv");
 }
 //------------------------------------------------------------------------------
-QString Settings::mpvBinary() {
+const QString &Settings::mpvBinary() {
+    if(mMpvBinaryCacheValid)
+        return mCachedMpvBinary;
     QString mpvPath = settingsConf->value("mpvBinary", "").toString();
     if(!QFile::exists(mpvPath)) {
     #ifdef _WIN32
@@ -299,12 +308,15 @@ QString Settings::mpvBinary() {
         if(!QFile::exists(mpvPath))
             mpvPath = "";
     }
-    return mpvPath;
+    mCachedMpvBinary = mpvPath;
+    mMpvBinaryCacheValid = true;
+    return mCachedMpvBinary;
 }
 
 void Settings::setMpvBinary(const QString &path) {
     if(QFile::exists(path)) {
         settingsConf->setValue("mpvBinary", path);
+        mMpvBinaryCacheValid = false;
     }
 }
 //------------------------------------------------------------------------------
@@ -337,7 +349,7 @@ void Settings::saveImageReaderFormatsToDisk() const {
     }
 }
 
-QList<QByteArray> Settings::supportedFormats() {
+const QList<QByteArray> &Settings::supportedFormats() {
     if (!mFormatsCacheValid) {
         // 优先使用磁盘缓存，避免重复扫描 QImageReader 支持的格式
         if (!mImageReaderFormatsCacheValid) {
@@ -360,9 +372,9 @@ QList<QByteArray> Settings::supportedFormats() {
 //------------------------------------------------------------------------------
 // (for open/save dialogs, as a single string)
 // example:  "Images (*.jpg, *.png)"
-QString Settings::supportedFormatsFilter() {
+const QString &Settings::supportedFormatsFilter() {
     if (!mFormatsFilterCacheValid) {
-        auto formats = supportedFormats();
+        const auto &formats = supportedFormats();
         QStringList formatList;
         formatList.reserve(formats.count());
         for(const auto &fmt : formats)
@@ -373,9 +385,9 @@ QString Settings::supportedFormatsFilter() {
     return mCachedFormatsFilter;
 }
 //------------------------------------------------------------------------------
-QString Settings::supportedFormatsRegex() {
+const QString &Settings::supportedFormatsRegex() {
     if (!mFormatsRegexCacheValid) {
-        auto formats = supportedFormats();
+        const auto &formats = supportedFormats();
         QStringList formatList;
         formatList.reserve(formats.count());
         for(const auto &fmt : formats)
@@ -387,7 +399,7 @@ QString Settings::supportedFormatsRegex() {
 }
 //------------------------------------------------------------------------------
 // returns list of mime types
-QStringList Settings::supportedMimeTypes() {
+const QStringList &Settings::supportedMimeTypes() {
     if (!mMimeTypesCacheValid) {
         mCachedSupportedMimeTypes.clear();
         QList<QByteArray> mimeTypes = QImageReader::supportedMimeTypes();
@@ -403,7 +415,11 @@ QStringList Settings::supportedMimeTypes() {
 //------------------------------------------------------------------------------
 bool Settings::videoPlayback() {
 #ifdef USE_MPV
-    return settingsConf->value("videoPlayback", true).toBool();
+    if (mVideoPlaybackCacheValid)
+        return mCachedVideoPlayback;
+    mCachedVideoPlayback = settingsConf->value("videoPlayback", true).toBool();
+    mVideoPlaybackCacheValid = true;
+    return mCachedVideoPlayback;
 #else
     return false;
 #endif
@@ -415,6 +431,7 @@ void Settings::setVideoPlayback(bool mode) {
     mMimeTypesCacheValid = false;
     mFormatsFilterCacheValid = false;
     mFormatsRegexCacheValid = false;
+    mVideoPlaybackCacheValid = false;
 }
 //------------------------------------------------------------------------------
 bool Settings::useSystemColorScheme() {
@@ -447,14 +464,18 @@ bool Settings::showChangelogs() {
 }
 //------------------------------------------------------------------------------
 qreal Settings::backgroundOpacity() {
+    if (mBackgroundOpacityCacheValid)
+        return mCachedBackgroundOpacity;
     bool ok = false;
     qreal value = settingsConf->value("backgroundOpacity", 1.0).toReal(&ok);
     if(!ok)
-        return 0.0;
+        value = 0.0;
     if(value > 1.0)
-        return 1.0;
+        value = 1.0;
     if(value < 0.0)
-        return 0.0;
+        value = 0.0;
+    mCachedBackgroundOpacity = value;
+    mBackgroundOpacityCacheValid = true;
     return value;
 }
 
@@ -464,6 +485,7 @@ void Settings::setBackgroundOpacity(qreal value) {
     else if(value < 0.0)
         value = 0.0;
     settingsConf->setValue("backgroundOpacity", value);
+    mBackgroundOpacityCacheValid = false;
 }
 //------------------------------------------------------------------------------
 bool Settings::blurBackground() {
@@ -514,7 +536,7 @@ int Settings::volume() {
     return stateConf->value("volume", 100).toInt();
 }
 //------------------------------------------------------------------------------
-const QMultiMap<QByteArray, QByteArray> Settings::videoFormats() const {
+const QMultiMap<QByteArray, QByteArray> &Settings::videoFormats() const {
     return mVideoFormatsMap;
 }
 //------------------------------------------------------------------------------
@@ -863,12 +885,17 @@ void Settings::setPlacesPanelWidth(int width) {
 //------------------------------------------------------------------------------
 void Settings::setSlideshowInterval(int ms) {
     settingsConf->setValue("slideshowInterval", ms);
+    mSlideshowIntervalCacheValid = false;
 }
 
 int Settings::slideshowInterval() {
+    if (mSlideshowIntervalCacheValid)
+        return mCachedSlideshowInterval;
     int interval = settingsConf->value("slideshowInterval", 3000).toInt();
     if(interval <= 0)
         interval = 3000;
+    mCachedSlideshowInterval = interval;
+    mSlideshowIntervalCacheValid = true;
     return interval;
 }
 //------------------------------------------------------------------------------
@@ -1193,11 +1220,16 @@ void Settings::setLastPrinter(const QString &name) {
 }
 //------------------------------------------------------------------------------
 bool Settings::jxlAnimation() {
-    return settingsConf->value("jxlAnimation", false).toBool();
+    if (mJxlAnimationCacheValid)
+        return mCachedJxlAnimation;
+    mCachedJxlAnimation = settingsConf->value("jxlAnimation", false).toBool();
+    mJxlAnimationCacheValid = true;
+    return mCachedJxlAnimation;
 }
 
 void Settings::setJxlAnimation(bool mode) {
     settingsConf->setValue("jxlAnimation", mode);
+    mJxlAnimationCacheValid = false;
 }
 //------------------------------------------------------------------------------
 bool Settings::autoResizeWindow() {
@@ -1256,8 +1288,9 @@ void Settings::setUseFixedZoomLevels(bool mode) {
     settingsConf->setValue("useFixedZoomLevels", mode);
 }
 //------------------------------------------------------------------------------
-QString Settings::defaultZoomLevels() {
-    return QString("0.05,0.1,0.125,0.166,0.25,0.333,0.5,0.66,1,1.5,2,3,4,5,6,7,8");
+const QString &Settings::defaultZoomLevels() {
+    static const QString levels("0.05,0.1,0.125,0.166,0.25,0.333,0.5,0.66,1,1.5,2,3,4,5,6,7,8");
+    return levels;
 }
 QString Settings::zoomLevels() {
     return settingsConf->value("fixedZoomLevels", defaultZoomLevels()).toString();

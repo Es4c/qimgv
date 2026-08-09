@@ -87,10 +87,10 @@ class Settings : public QObject
 public:
     static Settings* getInstance();
     ~Settings();
-    QStringList supportedMimeTypes();
-    QList<QByteArray> supportedFormats();
-    QString supportedFormatsFilter();
-    QString supportedFormatsRegex();
+    const QStringList &supportedMimeTypes();
+    const QList<QByteArray> &supportedFormats();
+    const QString &supportedFormatsFilter();
+    const QString &supportedFormatsRegex();
     int panelPreviewsSize();
     void setPanelPreviewsSize(int size);
     bool usePreloader();
@@ -105,7 +105,7 @@ public:
     void setPlayVideoSounds(bool mode);
     void setVolume(int vol);
     int volume();
-    QString mpvBinary();
+    const QString &mpvBinary();
     void setMpvBinary(const QString &path);
     PanelPosition panelPosition();
     void setPanelPosition(PanelPosition);
@@ -123,7 +123,7 @@ public:
     void setEnableSmoothScroll(bool mode);
     QStringList savedPaths();
     void setSavedPaths(const QStringList &paths);
-    QString tmpDir();
+    const QString &tmpDir();
     bool smoothUpscaling();
     void setSmoothUpscaling(bool mode);
     void setExpandImage(bool mode);
@@ -222,7 +222,7 @@ public:
     bool confirmTrash();
     void setConfirmTrash(bool mode);
 
-    const QMultiMap<QByteArray, QByteArray> videoFormats() const;
+    const QMultiMap<QByteArray, QByteArray> &videoFormats() const;
 
     bool printLandscape();
     void setPrintLandscape(bool mode);
@@ -253,7 +253,7 @@ public:
     QString language();
     void setLanguage(const QString &lang);
 
-    QString defaultZoomLevels();
+    const QString &defaultZoomLevels();
     QString zoomLevels();
     void setZoomLevels(const QString &levels);
     bool useFixedZoomLevels();
@@ -347,6 +347,19 @@ private:
     mutable bool mImageScrollingCacheValid;
     mutable FolderEndAction mCachedFolderEndAction;
     mutable bool mFolderEndActionCacheValid;
+    
+    // 缓存热路径设置值（documentinfo 逐文件读取等）
+    mutable bool mCachedVideoPlayback;
+    mutable bool mVideoPlaybackCacheValid;
+    mutable bool mCachedJxlAnimation;
+    mutable bool mJxlAnimationCacheValid;
+    mutable qreal mCachedBackgroundOpacity;
+    mutable bool mBackgroundOpacityCacheValid;
+    mutable int mCachedSlideshowInterval;
+    mutable bool mSlideshowIntervalCacheValid;
+    QString mCachedTmpDir;
+    mutable QString mCachedMpvBinary;
+    mutable bool mMpvBinaryCacheValid;
     
     void loadTheme();
     void saveTheme();

@@ -108,7 +108,7 @@ void DirectoryManager::stopFileWatcher() {
 
 void DirectoryManager::readSettings() {
     mSupportedSuffixes.clear();
-    const auto formats = settings->supportedFormats();
+    const auto &formats = settings->supportedFormats();
     mSupportedSuffixes.reserve(static_cast<int>(formats.size()));
     for(const auto &fmt : formats)
         mSupportedSuffixes.insert(QString::fromLatin1(fmt).toLower());
