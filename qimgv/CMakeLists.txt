@@ -35,7 +35,6 @@ add_executable(qimgv
     main.cpp
     settings.cpp
     themestore.cpp
-    sharedresources.cpp
     shortcutbuilder.cpp
     proxystyle.cpp
     macosapplication.cpp

@@ -6,7 +6,6 @@
 #include <climits>
 #include "gui/idirectoryview.h"
 #include "directorymodel.h"
-#include "sharedresources.h"
 #include <QMimeData>
 
 class DirectoryPresenter : public QObject {

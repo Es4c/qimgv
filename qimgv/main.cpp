@@ -17,7 +17,6 @@
 #include "utils/inputmap.h"
 #include "utils/actions.h"
 #include "utils/cmdoptionsrunner.h"
-#include "sharedresources.h"
 #include "proxystyle.h"
 #include "core.h"
 

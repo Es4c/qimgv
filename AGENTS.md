@@ -36,7 +36,7 @@ Other conventions:
 
 ## Layout
 
-- `qimgv/main.cpp` — entrypoint; app info/env quirks are set here (e.g. `QT_PLUGIN_PATH=""` on Windows). `core.cpp/h` orchestrates the app; `settings.cpp`, `themestore.cpp`, `shortcutbuilder.cpp`, `proxystyle.cpp`, `sharedresources.cpp` are top-level support.
+- `qimgv/main.cpp` — entrypoint; app info/env quirks are set here (e.g. `QT_PLUGIN_PATH=""` on Windows). `core.cpp/h` orchestrates the app; `settings.cpp`, `themestore.cpp`, `shortcutbuilder.cpp`, `proxystyle.cpp` are top-level support.
 - `qimgv/components/` — `actionmanager`, `cache`, `directorymanager` (with `watchers/windows` and `watchers/linux`), `loader`, `scaler`, `scriptmanager`.
 - `qimgv/gui/` — `viewers` (e.g. `imageviewerv2`), `panels` (`mainpanel`, `sidepanel`, `infobar`, `croppanel`), `overlays`, `dialogs`, `customwidgets`.
 - `qimgv/sourcecontainers/`, `qimgv/utils/`, `qimgv/3rdparty/QtOpenCV` (built only when `OPENCV_SUPPORT=ON`).
