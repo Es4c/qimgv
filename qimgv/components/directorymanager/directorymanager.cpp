@@ -866,10 +866,23 @@ void DirectoryManager::processPendingRemovals(const QVector<QString> &removes) {
 
     // 文件删除：同理（此时 dirCount 已更新，视图索引按当前目录数计算）
     {
+        // ⭐ 原子替换（如 QSaveFile 提交：删除+重建）同样会触发 REMOVED 事件，
+        // 但文件仍在磁盘上 → 实为"替换"而非删除：刷新元数据即可，不删除条目，
+        // 避免 Core::onFileRemoved 误判为真删除而跳到下一张图片
+        QVector<QString> kept;
         QVector<QPair<QString, int>> toRemove;
-        for(const auto &p : paths)
-            if(containsFile(p))
-                toRemove.append(QPair<QString, int>(p, indexOfFile(p)));
+        for(const auto &p : paths) {
+            if(!containsFile(p))
+                continue;
+            if(QFileInfo::exists(p)) {
+                kept.append(p);
+                continue;
+            }
+            toRemove.append(QPair<QString, int>(p, indexOfFile(p)));
+        }
+        if(!kept.isEmpty())
+            for(const auto &p : kept)
+                updateFileEntry(p);
         if(!toRemove.isEmpty()) {
             QSet<QString> removalSet;
             for(const auto &r : toRemove) removalSet.insert(r.first);
