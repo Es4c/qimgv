@@ -3,9 +3,7 @@
 static constexpr int kThreadWaitMs = 2000;
 static constexpr int kThreadWaitMsDestructor = 3000;
 
-#if defined(__linux__) || defined(__FreeBSD__)
-#include "linux/linuxwatcher.h"
-#elif defined(_WIN32)
+#if defined(_WIN32)
 #include "windows/windowswatcher.h"
 #elif defined(__APPLE__)
 #include "dummywatcher.h"
@@ -67,9 +65,7 @@ DirectoryWatcher::~DirectoryWatcher()
 
 DirectoryWatcher* DirectoryWatcher::newInstance()
 {
-#if defined(__linux__) || defined(__FreeBSD__)
-    return new LinuxWatcher();
-#elif defined(_WIN32)
+#if defined(_WIN32)
     return new WindowsWatcher();
 #elif defined(__APPLE__)
     return new DummyWatcher();
