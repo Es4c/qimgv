@@ -7,7 +7,7 @@ CopyOverlay::CopyOverlay(FloatingWidgetContainer *parent) :
     ui(new Ui::CopyOverlay)
 {
     ui->setupUi(this);
-    hide();
+    OverlayWidget::hide();
     setFadeEnabled(true);
 
     ui->closeButton->setIconPath(":/res/icons/common/overlay/close-dim16.png");

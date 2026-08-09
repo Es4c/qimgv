@@ -23,7 +23,7 @@ RenameOverlay::RenameOverlay(FloatingWidgetContainer *parent) :
     for (const auto &s : renameShortcuts)
         keyFilter.insert(s);
 
-    hide();
+    OverlayWidget::hide();
     if(parent)
         setContainerSize(parent->size());
 }

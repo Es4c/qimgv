@@ -12,7 +12,7 @@ CropOverlay::CropOverlay(FloatingWidgetContainer *parent)
     handleSize = static_cast<int>(8 * dpr);
 
     if(parent) setContainerSize(parent->size());
-    hide();
+    CropOverlay::hide();
 }
 
 void CropOverlay::setImageRealSize(const QSize& sz) {

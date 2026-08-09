@@ -6,7 +6,7 @@ FloatingWidget::FloatingWidget(FloatingWidgetContainer *parent)
 {
     setAccessibleName("OverlayWidget");
     connect(parent, &FloatingWidgetContainer::resized, this, &FloatingWidget::onContainerResized);
-    hide();
+    QWidget::hide();
 }
 
 QSize FloatingWidget::containerSize() {
