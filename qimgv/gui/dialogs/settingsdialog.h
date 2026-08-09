@@ -33,7 +33,7 @@ public:
     void switchToPage(int number);
 
 public slots:
-    int exec();
+    int exec() override;
 
 private:
     void initializeLanguageMap();
