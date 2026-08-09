@@ -9,11 +9,11 @@ The canonical build environment is MSYS2 `CLANG64` (Clang), defined in `.github/
 ```
 cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CXX_STANDARD=23 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF \
-  -DUSE_QT5=OFF -DVIDEO_SUPPORT=OFF -DOPENCV_SUPPORT=ON -DCMAKE_PREFIX_PATH=/clang64
+  -DVIDEO_SUPPORT=OFF -DOPENCV_SUPPORT=ON -DCMAKE_PREFIX_PATH=/clang64
 cmake --build build --config Release
 ```
 
-- CMake options (root `CMakeLists.txt`): `VIDEO_SUPPORT` (default ON, builds `plugins/player_mpv`), `OPENCV_SUPPORT` (default ON, needs OpenCV), `KDE_SUPPORT` (OFF), `USE_QT5` (OFF).
+- **Qt6 only** (6.11+, no Qt5 compatibility code — the repo no longer carries `QT_VERSION`/`USE_QT5` branches). CMake options (root `CMakeLists.txt`): `VIDEO_SUPPORT` (default ON, builds `plugins/player_mpv`), `OPENCV_SUPPORT` (default ON, needs OpenCV), `KDE_SUPPORT` (OFF).
 - The strict CI (`qimgv-CI-Strict-Check.yml`) builds Debug with `-Wall -Wextra -Werror` plus ~40 extra warnings and clang-tidy; keep new code clean under those flags. Release CI uses `-march=x86-64-v3` + LTO (`qimgv-qt6-build.yml`).
 - README mentions clang-format, but there is **no `.clang-format`/`.clang-tidy` file** in the repo — formatting is not enforced by tooling.
 
@@ -44,4 +44,4 @@ Other conventions:
 
 ## Translations
 
-Single translation `qimgv/res/translations/zh_CN.ts`, listed in `TS_FILES` in `qimgv/CMakeLists.txt`. Qt6 uses `qt_add_lupdate`/`qt_add_lrelease` automatically; the `qimgv_lupdate` target exists for Qt5 only. New locale = add a `.ts` to `TS_FILES`.
+Single translation `qimgv/res/translations/zh_CN.ts`, listed in `TS_FILES` in `qimgv/CMakeLists.txt`. `qt_add_lupdate`/`qt_add_lrelease` handle `.ts`→`.qm` (the `qimgv_lupdate` target updates the `.ts`). New locale = add a `.ts` to `TS_FILES`.

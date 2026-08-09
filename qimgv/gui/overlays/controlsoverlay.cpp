@@ -80,11 +80,7 @@ void ControlsOverlay::recalculateGeometry() {
     recalculateGeometryInternal();
 }
 
-#if QT_VERSION > QT_VERSION_CHECK(6,0,0)
 void ControlsOverlay::enterEvent(QEnterEvent *event) {
-#else
-void ControlsOverlay::enterEvent(QEvent *event) {
-#endif
     Q_UNUSED(event)
     fadeAnimation->stop();
     fadeInAnimation->stop();

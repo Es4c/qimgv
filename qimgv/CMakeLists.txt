@@ -8,25 +8,18 @@ if(APPLE)
 endif()
 
 # TRANSLATIONS
-find_package(Qt${QT_VERSION_MAJOR} COMPONENTS LinguistTools)
+find_package(Qt6 COMPONENTS LinguistTools)
 # Example of creating a new translation file.
 # 1. cd into qimgv directory and run:
 #   lupdate -recursive . -ts res/translations/qimgv_en_US.ts    [replace "en_US" with your locale]
 # 2. Add your .ts filename into TS_FILES list below
 # 3. Translate it with Qt Linguist
+# 更新 .ts / 编译 .qm（qt_add_lupdate 生成 qimgv_lupdate target，可手动调用；qt_add_lrelease 把 .qm 加入目标源）
 set(TS_FILES
     "zh_CN.ts"
 )
 list(TRANSFORM TS_FILES PREPEND ${CMAKE_CURRENT_SOURCE_DIR}/res/translations/)
 set_source_files_properties(${TS_FILES} PROPERTIES OUTPUT_LOCATION ${PROJECT_BINARY_DIR}/qimgv/translations)
-
-# 1. Create 'qimgv_lupdate' target to update .ts files (needs to be called manually)
-# 2. Compile .ts > .qm
-if(${QT_VERSION_MAJOR} EQUAL 5)
-    add_custom_target(qimgv_lupdate COMMAND ${Qt5_LUPDATE_EXECUTABLE} -recursive
-        ${CMAKE_CURRENT_SOURCE_DIR} -ts ${TS_FILES})
-    qt5_add_translation(QM_FILES ${TS_FILES})
-endif()
 
 # ADD EXECUTABLE
 add_executable(qimgv
@@ -41,14 +34,10 @@ add_executable(qimgv
     resources.qrc
     qimgv.rc
     ${APPLE_ICON_PATH}
-    ${QM_FILES}
 )
 
-# update .ts, compile .qm (qt6 case)
-if(${QT_VERSION_MAJOR} EQUAL 6)
-    qt_add_lupdate(qimgv TS_FILES ${TS_FILES})
-    qt_add_lrelease(qimgv TS_FILES ${TS_FILES})
-endif()
+qt_add_lupdate(qimgv TS_FILES ${TS_FILES})
+qt_add_lrelease(qimgv TS_FILES ${TS_FILES})
 
 # ADD SOURCES
 add_subdirectory(components)
@@ -64,10 +53,7 @@ target_compile_features(qimgv PRIVATE cxx_std_23)
 set_target_properties(qimgv PROPERTIES CXX_EXTENSIONS OFF)
 
 # LINK STUFF
-target_link_libraries(qimgv PRIVATE Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Svg Qt${QT_VERSION_MAJOR}::PrintSupport)
-if(QT_VERSION_MAJOR GREATER_EQUAL 6)
-    target_link_libraries(qimgv PRIVATE Qt${QT_VERSION_MAJOR}::OpenGLWidgets)
-endif()
+target_link_libraries(qimgv PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg Qt6::PrintSupport Qt6::OpenGLWidgets)
 
 # OPTION DEFINITIONS, LINKING
 if(KDE_SUPPORT)

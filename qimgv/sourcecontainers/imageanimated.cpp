@@ -32,9 +32,7 @@ void ImageAnimated::loadMovie() {
 
     auto reader = std::make_unique<QImageReader>(mPath);
 
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     reader->setAllocationLimit(settings->memoryAllocationLimit());
-#endif
 
     if (!reader->canRead()) {
         mSize = QSize(0, 0);

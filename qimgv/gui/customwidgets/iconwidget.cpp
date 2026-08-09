@@ -104,11 +104,9 @@ void IconWidget::showEvent(QShowEvent *event) {
 
 bool IconWidget::event(QEvent *event) {
     const bool handled = QWidget::event(event);
-#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
     // 窗口跨屏拖动 / 系统缩放变化时 dpr 会变，按新 dpr 重新取图
     if(event->type() == QEvent::DevicePixelRatioChange)
         updateDpr();
-#endif
     return handled;
 }
 

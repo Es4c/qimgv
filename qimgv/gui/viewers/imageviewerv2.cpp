@@ -134,11 +134,9 @@ void ImageViewerV2::setupConnections()
 
 bool ImageViewerV2::eventFilter(QObject* obj, QEvent* ev)
 {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
     if (ev->type() == QEvent::DevicePixelRatioChange) {
         onDPRChanged();
     }
-#endif
     return QGraphicsView::eventFilter(obj, ev);
 }
 

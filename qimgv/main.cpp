@@ -60,18 +60,11 @@ int main(int argc, char *argv[]) {
     // do we still need this?
     qputenv("QT_AUTO_SCREEN_SCALE_FACTOR","0");
 
-#if (QT_VERSION_MAJOR == 5)
-    QGuiApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
-    QGuiApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
-#endif
-
     // Qt6 hidpi rendering on windows still has artifacts
     // This disables it for scale factors < 1.75
     // In this case only fonts are scaled
 #ifdef _WIN32
-#if (QT_VERSION_MAJOR == 6)
     QGuiApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::RoundPreferFloor);
-#endif
 #endif
 
     //qDebug() << qgetenv("QT_SCALE_FACTOR");
@@ -106,9 +99,6 @@ int main(int argc, char *argv[]) {
     qRegisterMetaType<ScalerRequest>("ScalerRequest");
     qRegisterMetaType<Script>("Script");
     qRegisterMetaType<std::shared_ptr<Image>>("std::shared_ptr<Image>");
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-    qRegisterMetaTypeStreamOperators<Script>("Script");
-#endif
 
     // 设置 Qt 应用程序信息（必须在 Settings 初始化之前, 否则 QSettings 读到默认组织名）
     QCoreApplication::setOrganizationName("qimgv");

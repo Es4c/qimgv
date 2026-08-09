@@ -47,9 +47,7 @@ static int transformationToExifOrientation(QImageIOHandler::Transformations t) {
 void ImageStatic::loadGeneric() {
     QImageReader reader(mPath);
 
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     reader.setAllocationLimit(settings->memoryAllocationLimit());
-#endif
 
     // 禁用 Qt 自动方向处理，统一由我们自己控制
     reader.setAutoTransform(false);

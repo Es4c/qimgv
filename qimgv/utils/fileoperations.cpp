@@ -267,26 +267,6 @@ void FileOperations::moveToTrash(const QString &filePath, FileOpResult &result) 
     result = moveToTrashImpl(filePath) ? SUCCESS : OTHER_ERROR;
 }
 
-#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
 bool FileOperations::moveToTrashImpl(const QString &filePath) {
     return QFile::moveToTrash(filePath);
 }
-#else
-#ifdef Q_OS_WIN32
-bool FileOperations::moveToTrashImpl(const QString &file) {
-    QFileInfo fi(file);
-    if (!fi.exists())
-        return false;
-
-    std::wstring w = fi.absoluteFilePath().toStdWString();
-    w.push_back(L'\0');
-
-    SHFILEOPSTRUCTW op{};
-    op.wFunc = FO_DELETE;
-    op.pFrom = w.c_str();
-    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
-
-    return SHFileOperationW(&op) == 0;
-}
-#endif
-#endif
