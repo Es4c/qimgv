@@ -56,7 +56,7 @@ void MpvWidget::command(const char *cmd) {
     mpv_command_string(mpv, cmd);
 }
 
-void MpvWidget::command(const char *const args[]) {
+void MpvWidget::command(const char **args) {
     mpv_command(mpv, args);
 }
 

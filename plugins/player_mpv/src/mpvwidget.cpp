@@ -1,6 +1,7 @@
 #include "mpvwidget.h"
 #include <stdexcept>
 #include <array>
+#include <QEvent>
 
 // mpv 线程回调：用 functor 形式入队，避免每次按名字查元方法。
 void MpvWidget::wakeup(void *ctx) {
@@ -65,7 +66,7 @@ void MpvWidget::command(const char *cmd) {
     mpv_command_string(mpv, cmd);
 }
 
-void MpvWidget::command(const char *const args[]) {
+void MpvWidget::command(const char **args) {
     mpv_command(mpv, args);
 }
 
@@ -96,7 +97,7 @@ void MpvWidget::initializeGL() {
 
 void MpvWidget::paintGL() {
     static mpv_opengl_fbo mpfbo{0, 0, 0, 0};
-    static constexpr int flip_y{1};
+    static int flip_y{1};
     static std::array<mpv_render_param, 3> params{
         mpv_render_param{MPV_RENDER_PARAM_OPENGL_FBO, &mpfbo},
         mpv_render_param{MPV_RENDER_PARAM_FLIP_Y, &flip_y},

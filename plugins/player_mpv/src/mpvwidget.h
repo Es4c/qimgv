@@ -22,7 +22,7 @@ public:
 
     void command(const QVariant& params);
     void command(const char *cmd);
-    void command(const char *const args[]);
+    void command(const char **args);
     void setOption(const QString &name, const QVariant &value);
     void setProperty(const QString& name, const QVariant& value);
     [[nodiscard]] QVariant getProperty(const QString& name) const;
