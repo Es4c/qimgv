@@ -46,11 +46,6 @@ Settings::Settings(QObject *parent) : QObject(parent) {
     mFocusPointIn1to1ModeCacheValid = false;
     mImageScrollingCacheValid = false;
     mFolderEndActionCacheValid = false;
-    mVideoPlaybackCacheValid = false;
-    mJxlAnimationCacheValid = false;
-    mBackgroundOpacityCacheValid = false;
-    mSlideshowIntervalCacheValid = false;
-    mMpvBinaryCacheValid = false;
 }
 //------------------------------------------------------------------------------
 Settings::~Settings() {
@@ -293,9 +288,7 @@ void Settings::fillVideoFormats() {
     mVideoFormatsMap.insert("video/x-flv",      "flv");
 }
 //------------------------------------------------------------------------------
-const QString &Settings::mpvBinary() {
-    if(mMpvBinaryCacheValid)
-        return mCachedMpvBinary;
+QString Settings::mpvBinary() {
     QString mpvPath = settingsConf->value("mpvBinary", "").toString();
     if(!QFile::exists(mpvPath)) {
     #ifdef _WIN32
@@ -308,15 +301,12 @@ const QString &Settings::mpvBinary() {
         if(!QFile::exists(mpvPath))
             mpvPath = "";
     }
-    mCachedMpvBinary = mpvPath;
-    mMpvBinaryCacheValid = true;
-    return mCachedMpvBinary;
+    return mpvPath;
 }
 
 void Settings::setMpvBinary(const QString &path) {
     if(QFile::exists(path)) {
         settingsConf->setValue("mpvBinary", path);
-        mMpvBinaryCacheValid = false;
     }
 }
 //------------------------------------------------------------------------------
@@ -415,11 +405,7 @@ const QStringList &Settings::supportedMimeTypes() {
 //------------------------------------------------------------------------------
 bool Settings::videoPlayback() {
 #ifdef USE_MPV
-    if (mVideoPlaybackCacheValid)
-        return mCachedVideoPlayback;
-    mCachedVideoPlayback = settingsConf->value("videoPlayback", true).toBool();
-    mVideoPlaybackCacheValid = true;
-    return mCachedVideoPlayback;
+    return settingsConf->value("videoPlayback", true).toBool();
 #else
     return false;
 #endif
@@ -431,7 +417,6 @@ void Settings::setVideoPlayback(bool mode) {
     mMimeTypesCacheValid = false;
     mFormatsFilterCacheValid = false;
     mFormatsRegexCacheValid = false;
-    mVideoPlaybackCacheValid = false;
 }
 //------------------------------------------------------------------------------
 bool Settings::useSystemColorScheme() {
@@ -464,18 +449,14 @@ bool Settings::showChangelogs() {
 }
 //------------------------------------------------------------------------------
 qreal Settings::backgroundOpacity() {
-    if (mBackgroundOpacityCacheValid)
-        return mCachedBackgroundOpacity;
     bool ok = false;
     qreal value = settingsConf->value("backgroundOpacity", 1.0).toReal(&ok);
     if(!ok)
-        value = 0.0;
+        return 0.0;
     if(value > 1.0)
-        value = 1.0;
+        return 1.0;
     if(value < 0.0)
-        value = 0.0;
-    mCachedBackgroundOpacity = value;
-    mBackgroundOpacityCacheValid = true;
+        return 0.0;
     return value;
 }
 
@@ -485,7 +466,6 @@ void Settings::setBackgroundOpacity(qreal value) {
     else if(value < 0.0)
         value = 0.0;
     settingsConf->setValue("backgroundOpacity", value);
-    mBackgroundOpacityCacheValid = false;
 }
 //------------------------------------------------------------------------------
 bool Settings::blurBackground() {
@@ -885,17 +865,12 @@ void Settings::setPlacesPanelWidth(int width) {
 //------------------------------------------------------------------------------
 void Settings::setSlideshowInterval(int ms) {
     settingsConf->setValue("slideshowInterval", ms);
-    mSlideshowIntervalCacheValid = false;
 }
 
 int Settings::slideshowInterval() {
-    if (mSlideshowIntervalCacheValid)
-        return mCachedSlideshowInterval;
     int interval = settingsConf->value("slideshowInterval", 3000).toInt();
     if(interval <= 0)
         interval = 3000;
-    mCachedSlideshowInterval = interval;
-    mSlideshowIntervalCacheValid = true;
     return interval;
 }
 //------------------------------------------------------------------------------
@@ -1220,16 +1195,11 @@ void Settings::setLastPrinter(const QString &name) {
 }
 //------------------------------------------------------------------------------
 bool Settings::jxlAnimation() {
-    if (mJxlAnimationCacheValid)
-        return mCachedJxlAnimation;
-    mCachedJxlAnimation = settingsConf->value("jxlAnimation", false).toBool();
-    mJxlAnimationCacheValid = true;
-    return mCachedJxlAnimation;
+    return settingsConf->value("jxlAnimation", false).toBool();
 }
 
 void Settings::setJxlAnimation(bool mode) {
     settingsConf->setValue("jxlAnimation", mode);
-    mJxlAnimationCacheValid = false;
 }
 //------------------------------------------------------------------------------
 bool Settings::autoResizeWindow() {

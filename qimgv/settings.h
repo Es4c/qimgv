@@ -105,7 +105,7 @@ public:
     void setPlayVideoSounds(bool mode);
     void setVolume(int vol);
     int volume();
-    const QString &mpvBinary();
+    QString mpvBinary();
     void setMpvBinary(const QString &path);
     PanelPosition panelPosition();
     void setPanelPosition(PanelPosition);
@@ -348,18 +348,8 @@ private:
     mutable FolderEndAction mCachedFolderEndAction;
     mutable bool mFolderEndActionCacheValid;
     
-    // 缓存热路径设置值（documentinfo 逐文件读取等）
-    mutable bool mCachedVideoPlayback;
-    mutable bool mVideoPlaybackCacheValid;
-    mutable bool mCachedJxlAnimation;
-    mutable bool mJxlAnimationCacheValid;
-    mutable qreal mCachedBackgroundOpacity;
-    mutable bool mBackgroundOpacityCacheValid;
-    mutable int mCachedSlideshowInterval;
-    mutable bool mSlideshowIntervalCacheValid;
+    // tmpDir() 路径缓存（setupCache() 末尾算好一次，运行期不变）
     QString mCachedTmpDir;
-    mutable QString mCachedMpvBinary;
-    mutable bool mMpvBinaryCacheValid;
     
     void loadTheme();
     void saveTheme();
