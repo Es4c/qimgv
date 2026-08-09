@@ -1,20 +1,15 @@
 #pragma once
 
 #include <QApplication>
-#include <QFileOpenEvent>
+
+class QFileOpenEvent;
 
 class MacOSApplication : public QApplication {
     Q_OBJECT
 public:
-    MacOSApplication(int &argc, char *argv[]) : QApplication(argc, argv) {}
+    MacOSApplication(int &argc, char *argv[]);
 protected:
-    bool event(QEvent *event) override {
-        if (event->type() == QEvent::FileOpen) {
-            emit fileOpened(static_cast<QFileOpenEvent *>(event)->file());
-            return true;
-        }
-        return QApplication::event(event);
-    }
+    bool event(QEvent *event) override;
 signals:
     void fileOpened(QString filePath);
 };
