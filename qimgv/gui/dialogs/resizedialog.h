@@ -26,7 +26,7 @@ public:
     QSize newSize();
 
 public slots:
-    int exec();
+    int exec() override;
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
