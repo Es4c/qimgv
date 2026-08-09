@@ -111,6 +111,7 @@ jobs:
             --no-translations \
             --no-system-d3d-compiler \
             --no-opengl-sw \
+            --no-network \
             --compiler-runtime \
             --dir "$TARGET" \
             "$TARGET/qimgv.exe"
@@ -134,6 +135,23 @@ jobs:
               [ -d "$src/iconengines" ]   && cp -n "$src/iconengines"/*.dll          "$TARGET/iconengines/"   2>/dev/null || true
             fi
           done
+
+          # 只保留需要的图片格式插件，其余全部删除（减小体积，并避免首启枚举全部插件触发杀软扫描）
+          KEEP_IMAGE_FORMATS=(
+            qjpeg.dll qwebp.dll qgif.dll qico.dll qsvg.dll qtiff.dll
+            kimg_avif.dll kimg_heif.dll kimg_jxl.dll
+          )
+          cd "$TARGET/imageformats"
+          for f in *.dll; do
+            if ! printf '%s\n' "${KEEP_IMAGE_FORMATS[@]}" | grep -qx "$f"; then
+              rm -f "$f"
+            fi
+          done
+          cd - >/dev/null
+          # 本应用不使用网络 / QML 触控 / SVG 图标引擎，删除对应插件目录（Qt6Network 已由 --no-network 排除，此处兜底）
+          rm -rf "$TARGET/tls" "$TARGET/networkinformation" "$TARGET/generic" "$TARGET/iconengines"
+          rm -f "$TARGET/Qt6Network.dll"
+          echo "imageformats 已剪裁为: ${KEEP_IMAGE_FORMATS[*]}"
           
           # 拷贝我们自己编译的视频插件（mpv 后端）
           if [ -f "build/plugins/player_mpv/player_mpv.dll" ]; then
@@ -198,6 +216,20 @@ jobs:
           
           print("Dependency resolution complete.")
           EOF
+
+          # 预热运行一次生成 cache/supported_formats.cache 并随包发布：
+          # 用户首次启动直接命中磁盘缓存（settings.cpp 按 Qt 版本号校验），
+          # 不再枚举全部图片插件，避免首次启动触发杀软内存扫描（原约 5 秒卡顿）
+          ( cd "$TARGET" && ./qimgv.exe & )
+          sleep 8
+          taskkill //F //IM qimgv.exe 2>/dev/null || true
+          if [ -f "$TARGET/cache/supported_formats.cache" ]; then
+            echo "OK: 已生成 supported_formats.cache ($(wc -c < "$TARGET/cache/supported_formats.cache") bytes)"
+          else
+            echo "WARN: 未能生成 supported_formats.cache（无桌面会话？）— 用户首启仍会枚举一次图片插件"
+          fi
+          # 清理 CI 运行残留的本地状态，避免打包进用户配置
+          rm -rf "$TARGET/conf"
 
           echo "--- Final Verification ---"
           echo "Checking key files existence:"
