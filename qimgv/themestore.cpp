@@ -19,12 +19,14 @@ namespace {
     };
 
     // 缓存改为函数内 static: 惰性初始化, 消除命名空间级静态对象
-    // 初始化可能抛异常的警告及静态初始化顺序问题
-    DynamicThemeCache &systemThemeCache() {
+    // 初始化可能抛异常的警告及静态初始化顺序问题。
+    // inline: colorScheme() 处于 paint 路径(imageviewerv2.cpp:295),
+    // 消除每次调用的一次非内联函数调用开销(函数内 static 的 guard 检查不可省)。
+    inline DynamicThemeCache &systemThemeCache() {
         static DynamicThemeCache cache;
         return cache;
     }
-    DynamicThemeCache &customizedThemeCache() {
+    inline DynamicThemeCache &customizedThemeCache() {
         static DynamicThemeCache cache;
         return cache;
     }
