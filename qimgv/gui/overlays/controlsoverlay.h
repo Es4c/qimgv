@@ -17,6 +17,7 @@ public:
 
 public slots:
     void show() override;
+    void showInactive();
 
 private:
     QHBoxLayout *layout;

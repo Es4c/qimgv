@@ -63,6 +63,14 @@ void ControlsOverlay::show() {
     FloatingWidget::show();
 }
 
+void ControlsOverlay::showInactive() {
+    // 进入全屏时不弹出按钮：控件保持存在但透明，鼠标移到右上角时由 enterEvent 淡入
+    fadeAnimation->stop();
+    fadeInAnimation->stop();
+    fadeEffect->setOpacity(0.0);
+    FloatingWidget::show();
+}
+
 QSize ControlsOverlay::contentsSize() {
     return mCachedContentsSize;
 }
