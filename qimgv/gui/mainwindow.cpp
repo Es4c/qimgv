@@ -1018,7 +1018,7 @@ void MW::adaptToWindowState() {
             infoBarFullscreen->hide();
         auto pos = settings->panelPosition();
         if(!settings->panelEnabled() || pos == PANEL_BOTTOM || pos == PANEL_LEFT)
-            controlsOverlay->showInactive();
+            controlsOverlay->showForHover();
         else
             controlsOverlay->hide();
     } else {

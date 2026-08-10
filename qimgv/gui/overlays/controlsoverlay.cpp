@@ -38,36 +38,16 @@ ControlsOverlay::ControlsOverlay(FloatingWidgetContainer *parent) :
     fadeAnimation->setEndValue(0);
     fadeAnimation->setEasingCurve(QEasingCurve::OutQuart);
 
-    // 淡入动画：show() 时从透明淡入，避免之前显示后不可见的 bug
-    fadeInAnimation = new QPropertyAnimation(fadeEffect, "opacity");
-    fadeInAnimation->setDuration(230);
-    fadeInAnimation->setStartValue(0.0f);
-    fadeInAnimation->setEndValue(1.0f);
-    fadeInAnimation->setEasingCurve(QEasingCurve::OutQuart);
-
     if(parent)
         setContainerSize(parent->size());
     //this->show();
 }
 
-void ControlsOverlay::show() {
-    // 已完全可见且无动画进行时，重复 show（如反复进全屏）不再重放淡入
-    if(isVisible() && fadeEffect->opacity() >= 1.0f
-       && fadeAnimation->state() == QAbstractAnimation::Stopped
-       && fadeInAnimation->state() == QAbstractAnimation::Stopped)
-        return;
-    fadeEffect->setOpacity(0.0);
+void ControlsOverlay::showForHover() {
     fadeAnimation->stop();
-    fadeInAnimation->stop();
-    fadeInAnimation->start();   // 从透明淡入
-    FloatingWidget::show();
-}
-
-void ControlsOverlay::showInactive() {
-    // 进入全屏时不弹出按钮：控件保持存在但透明，鼠标移到右上角时由 enterEvent 淡入
-    fadeAnimation->stop();
-    fadeInAnimation->stop();
-    fadeEffect->setOpacity(0.0);
+    // 进入全屏时不弹出按钮：控件保持存在但透明，鼠标移到右上角时由 enterEvent 显示。
+    // 若鼠标当前已在控件内（如设置变更再次回调本函数），保持可见，避免悬停时按钮消失。
+    fadeEffect->setOpacity(underMouse() ? 1.0 : 0.0);
     FloatingWidget::show();
 }
 
@@ -91,13 +71,11 @@ void ControlsOverlay::recalculateGeometry() {
 void ControlsOverlay::enterEvent(QEnterEvent *event) {
     Q_UNUSED(event)
     fadeAnimation->stop();
-    fadeInAnimation->stop();
     fadeEffect->setOpacity(1.0);
 }
 
 void ControlsOverlay::leaveEvent(QEvent *event) {
     Q_UNUSED(event)
-    fadeInAnimation->stop();
     // 从当前透明度淡出，避免快速进出时跳变
     fadeAnimation->setStartValue(fadeEffect->opacity());
     fadeAnimation->start();

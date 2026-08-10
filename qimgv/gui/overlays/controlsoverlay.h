@@ -14,17 +14,14 @@ class ControlsOverlay : public FloatingWidget
     Q_OBJECT
 public:
     explicit ControlsOverlay(FloatingWidgetContainer *parent);
-
-public slots:
-    void show() override;
-    void showInactive();
+    // 显示但不弹出：保持透明等待悬停，鼠标移到右上角时由 enterEvent 显示
+    void showForHover();
 
 private:
     QHBoxLayout *layout;
     ActionButton *minimizeButton, *windowModeButton, *closeButton;
     QGraphicsOpacityEffect *fadeEffect;
     QPropertyAnimation *fadeAnimation;
-    QPropertyAnimation *fadeInAnimation;
     QSize contentsSize();
     void fitToContents();
     void recalculateGeometryInternal();
