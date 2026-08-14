@@ -20,7 +20,7 @@
 #endif
 
 void winSetFullscreenChrome(WId winId, bool fullscreen, FullscreenChromeState& state) {
-    const HWND hwnd = static_cast<HWND>(winId);
+    const HWND hwnd = reinterpret_cast<HWND>(winId);
     if (!hwnd)
         return;
 
