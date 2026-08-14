@@ -44,7 +44,8 @@ class Core : public QObject {
 public:
     Core();
     void showGui();
-
+    QString findAdjacentDirectoryWithImages(const QString &currentDirPath, bool forward);
+    QString findImageDirDescending(const QString &dirPath, bool forward);
 signals:
     void firstImageReady();
 
@@ -76,7 +77,8 @@ private:
     void rotateByDegrees(int degrees);
     void reset();
     bool setDirectory(const QString& path);
-
+    void doDirectorySwitch();
+    
     QMimeData *getMimeDataForImage(const std::shared_ptr<Image>& img, MimeDataTarget target);
     QTranslator *translator = nullptr;
 
@@ -92,6 +94,15 @@ private:
     Randomizer randomizer;
     void syncRandomizer();
     
+        // Cache size=1: when we jump forward from A→B, store {B, A} so that
+    // prevDirectory() can skip the recursive scan when going B→A.
+    // key = nextDir path, value = prevDir path (the dir we came from)
+    QPair<QString, QString> prevDirCache; // (nextDir, fromDir)
+    QPair<QString, QString> nextDirCache; // (currentDir, nextDir)
+
+    QTimer dirSwitchTimer;
+    int pendingDirSwitch = 0; // -1 prev, 0 none, 1 next
+    bool pendingSelectLast = false;
 
     void attachModel(std::unique_ptr<DirectoryModel> _model);
     const QString &selectedPath();

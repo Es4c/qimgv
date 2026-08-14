@@ -6,6 +6,8 @@ SettingsDialog::SettingsDialog(QWidget *parent) :
     ui(new Ui::SettingsDialog)
 {
     ui->setupUi(this);
+    connect(ui->longPressZoomRatioSlider, &QSlider::valueChanged,
+        this, &SettingsDialog::onLongPressZoomRatioSliderChanged);
     this->setWindowTitle(tr("Preferences — ") + qApp->applicationName());
 
     initializeLanguageMap();
@@ -44,6 +46,7 @@ SettingsDialog::SettingsDialog(QWidget *parent) :
     ui->scalingQualityComboBox->addItem("Bilinear+sharpen (OpenCV)");
     ui->scalingQualityComboBox->addItem("Bicubic (OpenCV)");
     ui->scalingQualityComboBox->addItem("Bicubic+sharpen (OpenCV)");
+    ui->scalingQualityComboBox->addItem("Lanczos3");
 #endif
 
     if(!settings->supportedFormats().contains("jxl"))
@@ -208,6 +211,8 @@ void SettingsDialog::readSettings() {
     ui->autoResizeWindowCheckBox->setChecked(settings->autoResizeWindow());
     ui->useFixedZoomLevelsCheckBox->setChecked(settings->useFixedZoomLevels());
     ui->zoomLevels->setText(settings->zoomLevels());
+    ui->longPressZoomCheckBox->setChecked(settings->longPressZoomEnabled());
+    ui->longPressZoomGroup->setEnabled(settings->longPressZoomEnabled());
 
     if(settings->folderEndAction() == FOLDER_END_NO_ACTION)
         ui->folderEndNoAction->setChecked(true);
@@ -220,6 +225,9 @@ void SettingsDialog::readSettings() {
 
     ui->zoomStepSlider->setValue(static_cast<int>(settings->zoomStep() * 100.f));
     onZoomStepSliderChanged(ui->zoomStepSlider->value());
+
+    ui->longPressZoomRatioSlider->setValue(static_cast<int>(settings->longPressZoomRatio() * 100.f));
+    onLongPressZoomRatioSliderChanged(ui->longPressZoomRatioSlider->value());
 
     ui->mouseScrollingSpeedSlider->setValue(static_cast<int>((settings->mouseScrollingSpeed() - 0.5f) / 0.25f));
     onMouseScrollingSpeedSliderChanged(ui->mouseScrollingSpeedSlider->value());
@@ -336,6 +344,8 @@ void SettingsDialog::saveSettings() {
     settings->setAutoResizeWindow(ui->autoResizeWindowCheckBox->isChecked());
     settings->setUseFixedZoomLevels(ui->useFixedZoomLevelsCheckBox->isChecked());
     settings->setZoomLevels(ui->zoomLevels->text());
+    settings->setLongPressZoomEnabled(ui->longPressZoomCheckBox->isChecked());
+    settings->setLongPressZoomRatio(static_cast<float>(qreal(ui->longPressZoomRatioSlider->value()) / qreal(100)));
 
     settings->setImageSaveQuality(ui->ImageQualitySlider->value());
     settings->setZoomStep(static_cast<float>(qreal(ui->zoomStepSlider->value()) / qreal(100)));
@@ -616,6 +626,10 @@ void SettingsDialog::onImageQualitySliderChanged(int value) {
 //------------------------------------------------------------------------------
 void SettingsDialog::onZoomStepSliderChanged(int value) {
     ui->zoomStepLabel->setText(QString::number(qreal(value) / qreal(100), 'f', 2) + "x");
+}
+//
+void SettingsDialog::onLongPressZoomRatioSliderChanged(int value) {
+    ui->longPressZoomRatioLabel->setText(QString::number(qreal(value) / qreal(100), 'f', 2) + "x");
 }
 //------------------------------------------------------------------------------
 void SettingsDialog::onMouseScrollingSpeedSliderChanged(int value) {

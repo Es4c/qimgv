@@ -138,7 +138,7 @@ QImage ImageLib::scaled(QImage source, QSize destSize, ScalingFilter filter) {
     }
 
 #ifdef USE_OPENCV
-    if (filter > 1 && !QtOcv::isSupported(scaleTarget.format()))
+    if (filter > 1 && filter != QI_FILTER_LANCZOS3 && !QtOcv::isSupported(scaleTarget.format()))
         filter = QI_FILTER_BILINEAR;
 #endif
 
@@ -164,6 +164,9 @@ QImage ImageLib::scaled(QImage source, QSize destSize, ScalingFilter filter) {
 
         case QI_FILTER_CV_CUBIC_SHARPEN:
             return scaled_CV(std::move(scaleTarget), destSize, cv::INTER_CUBIC, 1);
+        
+            case QI_FILTER_LANCZOS3:                                    // <-- 新增
+            return scaled_Lanczos3(std::move(scaleTarget), destSize); 
 #endif
 
         default:
@@ -212,6 +215,27 @@ QImage ImageLib::scaled_CV(QImage source, QSize destSize,
     }
 
     // 零拷贝返回：cv::Mat 内部引用计数自动管理生命周期，安全共享
+    return QtOcv::mat2Image_shared(dstMat, srcRef.format());
+}
+
+QImage ImageLib::scaled_Lanczos3(QImage source, QSize destSize)
+{
+    if (source.isNull()) return QImage();
+    if (destSize == source.size()) {
+        return std::move(source);
+    }
+
+    const QImage& srcRef = source;
+
+    QtOcv::MatColorOrder order;
+    cv::Mat srcMat = QtOcv::image2Mat_shared(srcRef, &order);
+    if (srcMat.empty()) return QImage();
+
+    cv::Mat dstMat;
+    cv::resize(srcMat, dstMat,
+               cv::Size(destSize.width(), destSize.height()),
+               0, 0, cv::INTER_LANCZOS4);
+
     return QtOcv::mat2Image_shared(dstMat, srcRef.format());
 }
 #endif

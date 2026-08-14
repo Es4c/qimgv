@@ -4,7 +4,11 @@
 #include <QMessageBox>
 #include <QMimeData>
 using namespace Qt::StringLiterals;
-
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <dwmapi.h>  // 需要链接 dwmapi.lib
+#pragma comment(lib, "dwmapi.lib")
+#endif
 // TODO: nuke this and rewrite
 MW::MW(QWidget *parent)
 : FloatingWidgetContainer(parent)
@@ -634,27 +638,82 @@ void MW::triggerFullScreen() {
 }
 
 void MW::showFullScreen() {
-    if(!isHidden())
+    if (!isHidden())
         saveWindowGeometry();
-    
-    const auto& screens = qApp->screens();
-    // 优化：缓存 screen() 调用，但不更新 currentDisplay
-    auto* currentScreen = window()->screen();
-    int _currentDisplay = static_cast<int>(screens.indexOf(currentScreen));
-    
-    // 如果窗口当前所在屏幕与目标屏幕不一致，则移动到目标屏幕
-    if(screens.count() > currentDisplay && currentDisplay != _currentDisplay) {
-        const QRect targetGeom = screens.at(currentDisplay)->geometry();
-        this->move(targetGeom.x(), targetGeom.y());
+
+    // 获取目标屏幕的完整几何（包含被任务栏占用的区域）
+    QScreen *targetScreen = window()->screen();
+    if (!targetScreen) {
+        targetScreen = QGuiApplication::primaryScreen();
     }
+
+    // ⭐ 修复 1：用 screen()->geometry() 覆盖整个物理屏幕
+    QRect fullScreenRect = targetScreen->geometry();
+
+    // ⭐ 修复 2：移除所有窗口装饰（包括 Win11 的圆角/阴影预留空间）
+    setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
     
+    // ⭐ 修复 3：使用原生全屏模式（更符合 Win11 规范）
     QWidget::showFullScreen();
+    
+    // ⭐ 修复 4：强制设置几何，覆盖可能的系统预留空间
+    setGeometry(fullScreenRect);
+    
+    // ⭐ 修复 5：在 Win11 下刷新窗口属性
+    #ifdef Q_OS_WIN
+        HWND hwnd = reinterpret_cast<HWND>(this->winId());
+        if (hwnd) {
+            // 移除 Windows 11 的圆角扩展（DWMWA_WINDOW_CORNER_PREFERENCE）
+            // 值 2 = DWMWCP_DONOTROUND
+            DWM_WINDOW_CORNER_PREFERENCE cornerPreference = DWMWCP_DONOTROUND;
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &cornerPreference,
+                sizeof(cornerPreference)
+            );
+            
+            // 移除窗口阴影（DWMWA_NCRENDERING_POLICY）
+            // 值 1 = DWMNCRP_DISABLED
+            DWMNCRENDERINGPOLICY ncrp = DWMNCRP_DISABLED;
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_NCRENDERING_POLICY,
+                &ncrp,
+                sizeof(ncrp)
+            );
+        }
+    #endif
     emit fullscreenStateChanged(true);
 }
 
 void MW::showWindowed() {
-    if(isFullScreen())
+    if (isFullScreen()) {
+    #ifdef Q_OS_WIN
+        HWND hwnd = reinterpret_cast<HWND>(this->winId());
+        if (hwnd) {
+            // 恢复窗口圆角和阴影
+            DWM_WINDOW_CORNER_PREFERENCE cornerPreference = DWMWCP_ROUND;
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &cornerPreference,
+                sizeof(cornerPreference)
+            );
+            
+            DWMNCRENDERINGPOLICY ncrp = DWMNCRP_ENABLED;
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_NCRENDERING_POLICY,
+                &ncrp,
+                sizeof(ncrp)
+            );
+        }
+    #endif
         QWidget::showNormal();
+        // 恢复窗口标饰（如果有的话）
+        setWindowFlags(Qt::Window);
+    }
     restoreWindowGeometry();
     QWidget::show();
     // 优化：移除 processEvents，依赖 Qt 自然事件循环

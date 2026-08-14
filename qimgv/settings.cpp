@@ -929,7 +929,7 @@ ScalingFilter Settings::scalingFilter() {
     if(mode > 2)
         mode = 1;
 #endif
-    if(mode < 0 || mode > 4)
+    if(mode < 0 || mode > QI_FILTER_LANCZOS3)
         mode = 1;
     
     mCachedScalingFilter = static_cast<ScalingFilter>(mode);
@@ -1257,6 +1257,31 @@ bool Settings::useFixedZoomLevels() {
 void Settings::setUseFixedZoomLevels(bool mode) {
     settingsConf->setValue("useFixedZoomLevels", mode);
 }
+
+//------------------------------------------------------------------------------
+// 长按左键放大镜：按住不动即以设定倍率（相对原图/raw size）放大，松开还原
+bool Settings::longPressZoomEnabled() {
+    return settingsConf->value("longPressZoomEnabled", false).toBool();
+}
+
+void Settings::setLongPressZoomEnabled(bool mode) {
+    settingsConf->setValue("longPressZoomEnabled", mode);
+}
+//------------------------------------------------------------------------------
+float Settings::longPressZoomRatio() {
+    bool ok = false;
+    float value = settingsConf->value("longPressZoomRatio", 3.0f).toFloat(&ok);
+    if(!ok)
+        value = 3.0f;
+    return qBound(1.0f, value, 20.0f);
+}
+
+void Settings::setLongPressZoomRatio(float ratio) {
+    ratio = qBound(1.0f, ratio, 20.0f);
+    settingsConf->setValue("longPressZoomRatio", ratio);
+}
+//------------------------------------------------------------------------------
+
 //------------------------------------------------------------------------------
 const QString &Settings::defaultZoomLevels() {
     static const QString levels("0.05,0.1,0.125,0.166,0.25,0.333,0.5,0.66,1,1.5,2,3,4,5,6,7,8");

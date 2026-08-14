@@ -7,6 +7,7 @@
 #include <QScreen>
 #include <ranges>
 #include <algorithm>
+#include <QApplication>
 
 ImageViewerV2::ImageViewerV2(QWidget* parent)
     : QGraphicsView(parent)
@@ -33,7 +34,9 @@ ImageViewerV2::ImageViewerV2(QWidget* parent)
     , trackpadDetection(true)
     , dragsEnabled(true)
     , wayland(false)
+    , longPressZoomEnabled(false)
     , zoomStep(0.1f)
+    , longPressZoomRatio(3.0f)
     , dpr(1.0f)
     , minScale(0.01f)
     , maxScale(500.0f)
@@ -108,6 +111,9 @@ void ImageViewerV2::initializeTimers()
     scaleTimer->setSingleShot(true);
     scaleTimer->setInterval(80);
 
+    longPressZoomTimer = new QTimer(this);
+    longPressZoomTimer->setSingleShot(true);
+
     scrollAnimationX = new QPropertyAnimation(this, "scrollX");
     scrollAnimationX->setEasingCurve(QEasingCurve::OutSine);
     scrollAnimationX->setDuration(ANIMATION_SPEED);
@@ -129,6 +135,7 @@ void ImageViewerV2::setupConnections()
     connect(scrollAnimationY, &QPropertyAnimation::finished, this, &ImageViewerV2::onScrollTimelineFinished);
     connect(animationTimer, &QTimer::timeout, this, &ImageViewerV2::onAnimationTimer, Qt::UniqueConnection);
     connect(scaleTimer, &QTimer::timeout, this, &ImageViewerV2::requestScaling);
+    connect(longPressZoomTimer, &QTimer::timeout, this, &ImageViewerV2::onLongPressZoomTimeout);
     connect(settings, &Settings::settingsChanged, this, &ImageViewerV2::readSettings);
 }
 
@@ -202,6 +209,11 @@ void ImageViewerV2::initSettings()
     zoomStep = settings->zoomStep();
     focusIn1to1 = settings->focusPointIn1to1Mode();
     trackpadDetection = settings->trackpadDetection();
+
+    longPressZoomEnabled = settings->longPressZoomEnabled();
+    longPressZoomRatio = settings->longPressZoomRatio();
+    if (!longPressZoomEnabled)
+        longPressZoomTimer->stop();
 
     useFixedZoomLevels = settings->useFixedZoomLevels();
     if (useFixedZoomLevels) {
@@ -512,6 +524,7 @@ void ImageViewerV2::showImage(QPixmap&& newPixmap)
 
 void ImageViewerV2::reset()
 {
+    lastRequestedScale = -1.0f;
     stopPosAnimation();
     pixmapItemScaled.setPixmap(QPixmap());
     pixmapScaled = QPixmap();
@@ -1292,6 +1305,10 @@ void ImageViewerV2::mousePressEvent(QMouseEvent* event)
         setZoomAnchor(event->pos());
     } else {
         QGraphicsView::mousePressEvent(event);
+        // 长按左键放大镜：武装计时器，若随后发生明显移动（拖拽/平移）则在
+        // mouseMoveEvent 中取消，只有按住不动超过延迟才会真正触发
+        if (longPressZoomEnabled && (event->button() & Qt::LeftButton))
+            longPressZoomTimer->start(LONG_PRESS_ZOOM_DELAY_MS);
     }
 }
 
@@ -1301,8 +1318,18 @@ void ImageViewerV2::mouseMoveEvent(QMouseEvent* event)
 
     if (!pixmap || mouseInteraction == MOUSE_DRAG || mouseInteraction == MOUSE_WHEEL_ZOOM)
         return;
-
+    // 长按放大计时器尚未触发前发生明显移动，视为普通拖拽/平移手势，取消长按
+    if (longPressZoomTimer->isActive() &&
+        ((abs(mousePressPos.x() - event->pos().x()) > dragThreshold) ||
+         (abs(mousePressPos.y() - event->pos().y()) > dragThreshold))) {
+        longPressZoomTimer->stop();
+    }
     if (event->buttons() & Qt::LeftButton) {
+        if (mouseInteraction == MOUSE_LONG_PRESS_ZOOM) {
+            // 放大镜跟随光标：仅重新居中视口，不改变缩放比例
+            centerOn(clampViewportCenter(mapToScene(event->pos())));
+            return;
+        }
         if (mouseInteraction == MOUSE_NONE) {
             if (scaledImageFitsCache) {
                 if (dragsEnabled)
@@ -1351,11 +1378,15 @@ void ImageViewerV2::mouseMoveEvent(QMouseEvent* event)
 void ImageViewerV2::mouseReleaseEvent(QMouseEvent* event)
 {
     unsetCursor();
+    longPressZoomTimer->stop();
 
     if (forceFastScale) {
         forceFastScale = false;
         pixmapItem.setTransformationMode(selectTransformationMode());
     }
+
+    if (mouseInteraction == MOUSE_LONG_PRESS_ZOOM)
+        endLongPressZoom();
 
     if (!pixmap || mouseInteraction == MOUSE_NONE) {
         QGraphicsView::mouseReleaseEvent(event);
@@ -1363,6 +1394,39 @@ void ImageViewerV2::mouseReleaseEvent(QMouseEvent* event)
     }
 
     mouseInteraction = MOUSE_NONE;
+}
+
+void ImageViewerV2::onLongPressZoomTimeout()
+{
+    // 触发时手势必须仍未被归类为拖拽/平移等其它类型
+    if (!pixmap || mouseInteraction != MOUSE_NONE)
+        return;
+
+    // 保存长按放大前的缩放比例、适应模式与视口位置，松开左键时据此还原
+    savedFitModeBeforeLongPressZoom = imageFitMode;
+    savedScaleBeforeLongPressZoom = currentScaleInternal();
+    savedItemLocalCenterBeforeLongPressZoom =
+        pixmapItem.mapFromScene(mapToScene(viewport()->rect().center()));
+
+    mouseInteraction = MOUSE_LONG_PRESS_ZOOM;
+    setCursor(Qt::CrossCursor);
+
+    if (viewport()->width() * viewport()->height() > LARGE_VIEWPORT_SIZE)
+        forceFastScale = true;
+
+    // 以按下位置为锚点放大到设置中的倍率（相对原图 raw size）
+    setZoomAnchor(mousePressPos);
+    zoomAnchored(longPressZoomRatio);
+    imageFitMode = FIT_FREE;
+}
+
+void ImageViewerV2::endLongPressZoom()
+{
+    // 还原长按放大前的缩放比例与视口位置，回到手势开始前的画面
+    doZoom(savedScaleBeforeLongPressZoom, false);
+    centerOn(clampViewportCenter(pixmapItem.mapToScene(savedItemLocalCenterBeforeLongPressZoom)));
+    imageFitMode = savedFitModeBeforeLongPressZoom;
+    requestScaling();
 }
 
 void ImageViewerV2::mousePan(QMouseEvent* event)
@@ -1427,11 +1491,10 @@ void ImageViewerV2::wheelEvent(QWheelEvent* event)
 
     if (!isWheel) {
         handleTrackpadScroll(event);
-    } else if (settings->imageScrolling() == SCROLL_BY_TRACKPAD_AND_WHEEL) {
-        handleMouseWheelScroll(event);
     } else {
         event->ignore();
-        QGraphicsView::wheelEvent(event);
+        if (parentWidget())
+            QApplication::sendEvent(parentWidget(), event);
     }
 
     saveViewportPos();

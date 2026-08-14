@@ -2114,6 +2114,168 @@
                     </layout>
                    </widget>
                   </item>
+                   <item>
+                      <widget class="QWidget" name="widget_31" native="true">
+                       <property name="accessibleName">
+                        <string notr="true">SLine</string>
+                       </property>
+                      </widget>
+                     </item>
+                     <!-- 新增垂直布局，包含长按放大的三个控件 -->
+                     <item>
+                      <layout class="QVBoxLayout" name="verticalLayout_longPress">
+                       <property name="spacing">
+                        <number>6</number>
+                       </property>
+                       <property name="leftMargin">
+                        <number>0</number>
+                       </property>
+                       <property name="topMargin">
+                        <number>0</number>
+                       </property>
+                       <property name="rightMargin">
+                        <number>0</number>
+                       </property>
+                       <property name="bottomMargin">
+                        <number>0</number>
+                       </property>
+                       <!-- 第1行：复选框 -->
+                       <item>
+                        <widget class="QCheckBox" name="longPressZoomCheckBox">
+                         <property name="text">
+                          <string>Zoom in on long press (magnifier)</string>
+                         </property>
+                        </widget>
+                       </item>
+                       <!-- 第2行：说明标签（自动换行） -->
+                       <item>
+                        <widget class="QLabel" name="label_55">
+                         <property name="accessibleName">
+                          <string notr="true">SNoteText</string>
+                         </property>
+                         <property name="wordWrap">
+                          <bool>true</bool>
+                         </property>
+                         <property name="text">
+                          <string>Press and hold the left mouse button to temporarily zoom in around the cursor; release to return</string>
+                         </property>
+                        </widget>
+                       </item>
+                       <!-- 第3行：设置组（内部水平布局） -->
+                       <item>
+                        <widget class="QWidget" name="longPressZoomGroup" native="true">
+                         <property name="enabled">
+                          <bool>false</bool>
+                         </property>
+                         <layout class="QHBoxLayout" name="horizontalLayout_27" stretch="0,0,0,0">
+                          <property name="spacing">
+                           <number>8</number>
+                          </property>
+                          <property name="leftMargin">
+                           <number>0</number>
+                          </property>
+                          <property name="topMargin">
+                           <number>0</number>
+                          </property>
+                          <property name="rightMargin">
+                           <number>0</number>
+                          </property>
+                          <property name="bottomMargin">
+                           <number>0</number>
+                          </property>
+                          <item>
+                           <widget class="QLabel" name="label_56">
+                            <property name="text">
+                             <string>Zoom ratio (x raw size):</string>
+                            </property>
+                           </widget>
+                          </item>
+                          <item>
+                           <widget class="QSlider" name="longPressZoomRatioSlider">
+                            <property name="sizePolicy">
+                             <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+                              <horstretch>0</horstretch>
+                              <verstretch>0</verstretch>
+                             </sizepolicy>
+                            </property>
+                            <property name="minimumSize">
+                             <size>
+                              <width>280</width>
+                              <height>0</height>
+                             </size>
+                            </property>
+                            <property name="maximumSize">
+                             <size>
+                              <width>300</width>
+                              <height>16777215</height>
+                             </size>
+                            </property>
+                            <property name="minimum">
+                             <number>100</number>
+                            </property>
+                            <property name="maximum">
+                             <number>2000</number>
+                            </property>
+                            <property name="pageStep">
+                             <number>50</number>
+                            </property>
+                            <property name="value">
+                             <number>300</number>
+                            </property>
+                            <property name="orientation">
+                             <enum>Qt::Horizontal</enum>
+                            </property>
+                            <property name="tickPosition">
+                             <enum>QSlider::NoTicks</enum>
+                            </property>
+                            <property name="tickInterval">
+                             <number>100</number>
+                            </property>
+                           </widget>
+                          </item>
+                          <item>
+                           <widget class="QLabel" name="longPressZoomRatioLabel">
+                            <property name="sizePolicy">
+                             <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                              <horstretch>0</horstretch>
+                              <verstretch>0</verstretch>
+                             </sizepolicy>
+                            </property>
+                            <property name="minimumSize">
+                             <size>
+                              <width>60</width>
+                              <height>0</height>
+                             </size>
+                            </property>
+                            <property name="maximumSize">
+                             <size>
+                              <width>60</width>
+                              <height>16777215</height>
+                             </size>
+                            </property>
+                            <property name="text">
+                             <string>[ratio]</string>
+                            </property>
+                           </widget>
+                          </item>
+                          <item>
+                           <spacer name="horizontalSpacer_35">
+                            <property name="orientation">
+                             <enum>Qt::Horizontal</enum>
+                            </property>
+                            <property name="sizeHint" stdset="0">
+                             <size>
+                              <width>40</width>
+                              <height>20</height>
+                             </size>
+                            </property>
+                           </spacer>
+                          </item>
+                         </layout>
+                        </widget>
+                       </item>
+                      </layout>
+                     </item>
                  </layout>
                 </widget>
                </item>
@@ -4532,6 +4694,22 @@ li.checked::marker { content: &quot;\2612&quot;; }
     <hint type="destinationlabel">
      <x>3</x>
      <y>49</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>longPressZoomCheckBox</sender>
+   <signal>toggled(bool)</signal>
+   <receiver>longPressZoomGroup</receiver>
+   <slot>setEnabled(bool)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>289</x>
+     <y>453</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>289</x>
+     <y>453</y>
     </hint>
    </hints>
   </connection>

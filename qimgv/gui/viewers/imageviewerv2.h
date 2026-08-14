@@ -20,7 +20,8 @@ enum MouseInteractionState {
     MOUSE_DRAG,
     MOUSE_PAN,
     MOUSE_ZOOM,
-    MOUSE_WHEEL_ZOOM
+    MOUSE_WHEEL_ZOOM,
+    MOUSE_LONG_PRESS_ZOOM
 };
 
 enum ViewLockMode {
@@ -123,6 +124,7 @@ private slots:
     void centerOnPixmap();
     void onScrollTimelineFinished();
     void onDPRChanged();
+    void onLongPressZoomTimeout();
 
 private:
     Q_PROPERTY(int scrollX READ scrollX WRITE setScrollX)
@@ -143,6 +145,7 @@ private:
 
     QTimer* animationTimer;
     QTimer* scaleTimer;
+    QTimer* longPressZoomTimer;
     QScrollBar* horizontalScroll;
     QScrollBar* verticalScroll;
     QPropertyAnimation* scrollAnimationX;
@@ -169,9 +172,11 @@ private:
     bool trackpadDetection;
     bool dragsEnabled;
     bool wayland;
+    bool longPressZoomEnabled;
 
     QList<float> zoomLevels;
     float zoomStep;
+    float longPressZoomRatio;
     float dpr;
     float minScale;
     float maxScale;
@@ -186,6 +191,10 @@ private:
     ImageFitMode imageFitModeDefault;
     ImageFocusPoint focusIn1to1;
     ScalingFilter mScalingFilter;
+    
+    float savedScaleBeforeLongPressZoom;
+    QPointF savedItemLocalCenterBeforeLongPressZoom;
+    ImageFitMode savedFitModeBeforeLongPressZoom;
 
     int zoomThreshold;
     int dragThreshold;
@@ -201,6 +210,7 @@ private:
     static constexpr int SCENE_SIZE = 200000;
     static constexpr int CENTER_OFFSET = 10000;
     static constexpr int ZOOM_THRESHOLD_FACTOR = 4;
+    static constexpr int LONG_PRESS_ZOOM_DELAY_MS = 350;
 
     void initSettings();
     void setScalingFilterImpl(ScalingFilter filter);
@@ -240,6 +250,7 @@ private:
     void handleWheelZoom(QWheelEvent* event);
     void handleTrackpadScroll(QWheelEvent* event);
     void handleMouseWheelScroll(QWheelEvent* event);
+    void endLongPressZoom();
 
     void adjustViewport();
     QPointF snappedCenter(QPointF center) const;

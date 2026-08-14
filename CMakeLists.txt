@@ -4,7 +4,7 @@ project(qimgv
     VERSION 1.0.2
     HOMEPAGE_URL "https://github.com/easymodo/qimgv"
     LANGUAGES CXX)
-
+add_compile_options(-march=x86-64-v3 -O3)
 message(STATUS "Build configuration: " ${CMAKE_BUILD_TYPE})
 
 # check for gcc
@@ -21,7 +21,7 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 # USER OPTIONS
 # Usage: cmake -DVIDEO_SUPPORT=ON [...]
-option(VIDEO_SUPPORT "Enable video support" ON)
+option(VIDEO_SUPPORT "Enable video support" OFF)
 option(OPENCV_SUPPORT "Enable HQ scaling via OpenCV" ON)
 option(KDE_SUPPORT "Support blur when using KDE" OFF)
 

@@ -49,7 +49,8 @@ enum ScalingFilter {
     QI_FILTER_BILINEAR,
     QI_FILTER_CV_BILINEAR_SHARPEN,
     QI_FILTER_CV_CUBIC,
-    QI_FILTER_CV_CUBIC_SHARPEN
+    QI_FILTER_CV_CUBIC_SHARPEN,
+    QI_FILTER_LANCZOS3
 };
 
 enum ZoomIndicatorMode {
@@ -258,6 +259,10 @@ public:
     void setZoomLevels(const QString &levels);
     bool useFixedZoomLevels();
     void setUseFixedZoomLevels(bool mode);
+    bool longPressZoomEnabled();
+    void setLongPressZoomEnabled(bool mode);
+    float longPressZoomRatio();
+    void setLongPressZoomRatio(float ratio);
     bool unlockMinZoom();
     void setUnlockMinZoom(bool mode);
     bool sortFolders();

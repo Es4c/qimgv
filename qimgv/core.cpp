@@ -1230,59 +1230,159 @@ void Core::loadParentDir() {
         loadPath(parentDir.absoluteFilePath());
 }
 
+// Descend into a directory tree.
+// forward=true: return first subdir with images (top-down)
+// forward=false: return last subdir with images (bottom-up)
+QString Core::findImageDirDescending(const QString &dirPath, bool forward) {
+    DirectoryManager dm;
+    if(!dm.setDirectory(dirPath))
+        return QString();
+    if(forward) {
+        if(dm.fileCount())
+            return dirPath;
+        for(int i = 0; i < (int)dm.dirCount(); i++) {
+            QString result = findImageDirDescending(dm.dirPathAt(i), forward);
+            if(!result.isEmpty())
+                return result;
+        }
+    } else {
+        for(int i = (int)dm.dirCount() - 1; i >= 0; i--) {
+            QString result = findImageDirDescending(dm.dirPathAt(i), forward);
+            if(!result.isEmpty())
+                return result;
+        }
+        if(dm.fileCount())
+            return dirPath;
+    }
+    return QString();
+}
+
+// Walk the directory tree to find next/prev folder with images, recursively.
+// forward=true: next, forward=false: prev
+QString Core::findAdjacentDirectoryWithImages(const QString &currentDirPath, bool forward) {
+    QString path = currentDirPath;
+    // When going forward, first check subdirectories of current folder
+    if(forward) {
+        DirectoryManager dmCurrent;
+        if(dmCurrent.setDirectory(path)) {
+            for(int i = 0; i < (int)dmCurrent.dirCount(); i++) {
+                QString result = findImageDirDescending(dmCurrent.dirPathAt(i), true);
+                if(!result.isEmpty())
+                    return result;
+            }
+        }
+    }
+    while(true) {
+        QFileInfo parentDir(QFileInfo(path).absolutePath());
+        if(!parentDir.exists() || !parentDir.isReadable())
+            return QString();
+        DirectoryManager dm;
+        if(!dm.setDirectory(parentDir.absoluteFilePath()))
+            return QString();
+        QString sibling = forward ? dm.nextOfDir(path) : dm.prevOfDir(path);
+        if(sibling.isEmpty()) {
+            // No more siblings at this level — climb up
+            if(!forward) {
+                DirectoryManager dmParent;
+                if(dmParent.setDirectory(parentDir.absoluteFilePath()) && dmParent.fileCount())
+                    return parentDir.absoluteFilePath();
+            }
+            path = parentDir.absoluteFilePath();
+            continue;
+        }
+        // Descend into the sibling tree
+        QString candidate = findImageDirDescending(sibling, forward);
+        if(!candidate.isEmpty())
+            return candidate;
+        // Sibling tree had no images — skip it and continue
+        path = sibling;
+    }
+}
+
 void Core::nextDirectory() {
     if(model->directoryPath().isEmpty())
         return;
     stopSlideshow();
-    QFileInfo currentDir(model->directoryPath());
-    QFileInfo parentDir(currentDir.absolutePath());
-    if(parentDir.exists() && parentDir.isReadable()) {
-        DirectoryManager dm;
-        if(!dm.setDirectory(parentDir.absoluteFilePath()))
-            return;
-        QString next = dm.nextOfDir(model->directoryPath());
-        if(!next.isEmpty()) {
-            if(!setDirectory(next))
-                return;
-            QFileInfo fi(next);
-            mw->showMessageDirectory(fi.baseName());
-            if(model->fileCount())
-                loadFileIndex(0, false, true);
-        } else {
-            mw->showMessageDirectoryEnd();
-        }
-    }
+    pendingDirSwitch = 1;
+    pendingSelectLast = false;
+    if(nextDirCache.first == model->directoryPath() && !nextDirCache.second.isEmpty())
+        dirSwitchTimer.start();
+    else
+        doDirectorySwitch();
 }
+
 
 void Core::prevDirectory(bool selectLast) {
     if(model->directoryPath().isEmpty())
         return;
-    QFileInfo currentDir(model->directoryPath());
-    QFileInfo parentDir(currentDir.absolutePath());
-    if(parentDir.exists() && parentDir.isReadable()) {
-        DirectoryManager dm;
-        dm.setDirectory(parentDir.absoluteFilePath());
-        QString prev = dm.prevOfDir(model->directoryPath());
-        if(!prev.isEmpty()) {
-            if(!setDirectory(prev))
-                return;
-            QFileInfo fi(prev);
-            mw->showMessageDirectory(fi.baseName());
-            if(model->fileCount()) {
-                if(selectLast)
-                    loadFileIndex(model->fileCount() - 1, false, true);
-                else
-                    loadFileIndex(0, false, true);
-            }
+    QString prev = findAdjacentDirectoryWithImages(model->directoryPath(), false);
+    if(!prev.isEmpty()) {
+        if(!setDirectory(prev))
+            return;
+        mw->showMessageDirectory(QFileInfo(prev).baseName());
+        if(model->fileCount()) {
+            if(selectLast)
+                loadFileIndex(model->fileCount() - 1, false, true);
+            else
+                loadFileIndex(0, false, true);
         } else {
             mw->showMessageDirectoryStart();
         }
     }
 }
 
+void Core::doDirectorySwitch() {
+    if(pendingDirSwitch == 0 || model->directoryPath().isEmpty())
+        return;
+    bool forward = (pendingDirSwitch == 1);
+    bool selectLast = pendingSelectLast;
+    pendingDirSwitch = 0;
+
+    QString currentDir = model->directoryPath();
+    QString target;
+
+    if(forward) {
+        if(nextDirCache.first == currentDir && !nextDirCache.second.isEmpty()) {
+            target = nextDirCache.second;
+            nextDirCache = {};
+        } else {
+            nextDirCache = {};
+            target = findAdjacentDirectoryWithImages(currentDir, true);
+        }
+        if(!target.isEmpty())
+            prevDirCache = {target, currentDir};
+    } else {
+        if(prevDirCache.first == currentDir && !prevDirCache.second.isEmpty()) {
+            target = prevDirCache.second;
+            prevDirCache = {};
+        } else {
+            prevDirCache = {};
+            target = findAdjacentDirectoryWithImages(currentDir, false);
+        }
+        if(!target.isEmpty())
+            nextDirCache = {target, currentDir};
+    }
+
+    if(target.isEmpty()) {
+        if(forward) mw->showMessageDirectoryEnd();
+        else mw->showMessageDirectoryStart();
+        return;
+    }
+    if(!setDirectory(target))
+        return;
+    mw->showMessageDirectory(QFileInfo(target).baseName());
+    if(model->fileCount()) {
+        if(!forward && selectLast)
+            loadFileIndex(model->fileCount() - 1, false, true);
+        else
+            loadFileIndex(0, false, true);
+    }
+}
+
 void Core::prevDirectory() {
     prevDirectory(false);
 }
+
 
 void Core::nextImage() {
     if(model->isEmpty() && folderEndAction != FOLDER_END_GOTO_ADJACENT)

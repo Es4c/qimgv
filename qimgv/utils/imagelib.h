@@ -32,6 +32,7 @@ public:
 
 #ifdef USE_OPENCV
     static QImage scaled_CV(QImage source, QSize destSize, cv::InterpolationFlags filter, int sharpen);
+    static QImage scaled_Lanczos3(QImage source, QSize destSize);
 #endif
 
     // EXIF 处理：也改为返回 QImage 以保持一致性
