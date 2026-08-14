@@ -1,5 +1,8 @@
 #include "mainwindow.h"
 #include "sourcecontainers/imageanimated.h"
+#ifdef _WIN32
+#include "utils/win11window.h"
+#endif
 #include <QImageWriter>
 #include <QMessageBox>
 #include <QMimeData>
@@ -649,12 +652,19 @@ void MW::showFullScreen() {
     }
     
     QWidget::showFullScreen();
+#ifdef _WIN32
+    // 全屏时禁用 DWM 圆角与 1px 边框（消除屏幕四周白色细线 + 白色圆角）
+    winSetFullscreenChrome(reinterpret_cast<void*>(winId()), true);
+#endif
     emit fullscreenStateChanged(true);
 }
 
 void MW::showWindowed() {
     if(isFullScreen())
         QWidget::showNormal();
+#ifdef _WIN32
+    winSetFullscreenChrome(reinterpret_cast<void*>(winId()), false);
+#endif
     restoreWindowGeometry();
     QWidget::show();
     // 优化：移除 processEvents，依赖 Qt 自然事件循环
