@@ -1,5 +1,7 @@
 #include "win11window.h"
 
+#include <bit>
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -20,7 +22,10 @@
 #endif
 
 void winSetFullscreenChrome(WId winId, bool fullscreen, FullscreenChromeState& state) {
-    const HWND hwnd = reinterpret_cast<HWND>(winId);
+    // Qt 的 winId() 返回整数（WId=quintptr），HWND 是指针类型；
+    // 用 std::bit_cast 按位转换，避免 reinterpret_cast 触发
+    // clang-tidy 的 performance-no-int-to-ptr 告警
+    const HWND hwnd = std::bit_cast<HWND>(winId);
     if (!hwnd)
         return;
 
