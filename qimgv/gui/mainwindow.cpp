@@ -402,6 +402,10 @@ void MW::showEvent(QShowEvent *event) {
             }
         });
     }
+    // 全屏期间被最小化再恢复会触发自发 Show 事件，Qt 的 QWindows11Style 会重新置 DWM 圆角；
+    // saved 表示正处于全屏会话（首次显示时尚未进入全屏入口），此时需重新禁用直到下次切换
+    if(isFullScreen() && m_fullscreenChromeState.saved)
+        winDisableFullscreenChrome(winId());
 }
 
 void MW::mouseMoveEvent(QMouseEvent *event) {

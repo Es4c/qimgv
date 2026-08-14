@@ -14,3 +14,7 @@ struct FullscreenChromeState {
 // 进入全屏（fullscreen=true）：保存当前 DWM 圆角偏好/边框颜色并禁用之；
 // 退出全屏（fullscreen=false）：用保存的值恢复。未保存过时直接返回，无副作用。
 void winSetFullscreenChrome(WId winId, bool fullscreen, FullscreenChromeState& state);
+
+// 全屏期间收到自发 Show 事件（如最小化后恢复）时，Qt 的 QWindows11Style 会重新置 ROUND，
+// 此函数只重新禁用圆角/边框，不读取或改动保存的状态。幂等，仅在 Show 等低频时机调用。
+void winDisableFullscreenChrome(WId winId);

@@ -21,6 +21,16 @@
 #define DWMWA_COLOR_NONE 0xFFFFFFFEu
 #endif
 
+// 禁用 DWM 圆角与 1px 边框（幂等）
+static void disableFullscreenChrome(HWND hwnd, DWORD attrSize) {
+    const DWORD noRound = DWMWCP_DONOTROUND;
+    DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+                          &noRound, attrSize);
+    const DWORD noBorder = DWMWA_COLOR_NONE;
+    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR,
+                          &noBorder, attrSize);
+}
+
 void winSetFullscreenChrome(WId winId, bool fullscreen, FullscreenChromeState& state) {
     // Qt 的 winId() 返回整数（WId=quintptr），HWND 是指针类型；
     // 用 std::bit_cast 按位转换，避免 reinterpret_cast 触发
@@ -39,14 +49,8 @@ void winSetFullscreenChrome(WId winId, bool fullscreen, FullscreenChromeState& s
                               &state.borderColor, attrSize);
         state.saved = true;
 
-        // 全屏时禁用 DWM 圆角，避免屏幕四角露出白色圆角
-        const DWORD noRound = DWMWCP_DONOTROUND;
-        DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
-                              &noRound, attrSize);
-        // 禁用 DWM 的 1px 边框（浅色主题下默认是白色细线）
-        const DWORD noBorder = DWMWA_COLOR_NONE;
-        DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR,
-                              &noBorder, attrSize);
+        // 全屏时禁用 DWM 圆角，避免屏幕四角露出白色圆角；同时去掉 1px 边框
+        disableFullscreenChrome(hwnd, attrSize);
     } else if (state.saved) {
         // 恢复窗口化时的圆角偏好与边框颜色
         DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
@@ -55,4 +59,12 @@ void winSetFullscreenChrome(WId winId, bool fullscreen, FullscreenChromeState& s
                               &state.borderColor, attrSize);
         state.saved = false;
     }
+}
+
+void winDisableFullscreenChrome(WId winId) {
+    const HWND hwnd = std::bit_cast<HWND>(winId);
+    if (!hwnd)
+        return;
+
+    disableFullscreenChrome(hwnd, sizeof(DWORD));
 }
