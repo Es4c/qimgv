@@ -639,22 +639,19 @@ void MW::triggerFullScreen() {
 }
 
 void MW::showFullScreen() {
-    if (!isHidden())
+    if(!isHidden())
         saveWindowGeometry();
 
-    // 获取目标屏幕的完整几何（包含被任务栏占用的区域）
-    QScreen *targetScreen = window()->screen();
-    if (!targetScreen) {
-        targetScreen = QGuiApplication::primaryScreen();
+    const auto& screens = qApp->screens();
+    // 优化：缓存 screen() 调用，但不更新 currentDisplay
+    auto* currentScreen = window()->screen();
+    int _currentDisplay = static_cast<int>(screens.indexOf(currentScreen));
+
+    // 如果窗口当前所在屏幕与目标屏幕不一致，则移动到目标屏幕
+    if(screens.count() > currentDisplay && currentDisplay != _currentDisplay) {
+        const QRect targetGeom = screens.at(currentDisplay)->geometry();
+        this->move(targetGeom.x(), targetGeom.y());
     }
-
-    // 用 screen()->geometry() 覆盖整个物理屏幕
-    QRect fullScreenRect = targetScreen->geometry();
-
-    // 移除所有窗口装饰（包括 Win11 的圆角/阴影预留空间）
-    setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
-    
-    // 使用原生全屏模式（更符合 Win11 规范）
     QWidget::showFullScreen();
     // 全屏时禁用 DWM 圆角与 1px 边框（消除屏幕四周白色细线 + 白色圆角）
     winSetFullscreenChrome(winId(), true, m_fullscreenChromeState);
