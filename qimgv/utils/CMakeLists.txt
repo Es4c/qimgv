@@ -12,4 +12,5 @@ target_sources(qimgv PRIVATE
     stuff.cpp
     wallpapersetter.cpp
     fileoperations.cpp
+    win11window.cpp
 )

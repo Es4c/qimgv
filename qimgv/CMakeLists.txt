@@ -77,6 +77,8 @@ endif()
 
 # generate proper GUI program on specified platform
 if(WIN32) # Check if we are on Windows
+    # Windows 11 DWM 圆角/边框处理（win11window.cpp）
+    target_link_libraries(qimgv PRIVATE dwmapi)
     if(MSVC) # Check if we are using the Visual Studio compiler
         set_target_properties(qimgv PROPERTIES WIN32_EXECUTABLE ON)
         target_link_options(qimgv PRIVATE "/ENTRY:mainCRTStartup")

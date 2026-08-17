@@ -38,6 +38,7 @@
 #include "gui/dialogs/settingsdialog.h"
 #include "gui/viewers/documentwidget.h"
 #include "gui/panels/infobar/infobarproxy.h"
+#include "utils/win11window.h"
 #ifdef USE_KDE_BLUR
 #include <KWindowEffects>
 #endif
@@ -119,6 +120,7 @@ private:
     InfoBarCache m_windowedBar;
     InfoBarCache m_fullscreenBar;
     QLocale m_locale;
+    FullscreenChromeState m_fullscreenChromeState;
 
     void saveWindowGeometry();
     void restoreWindowGeometry();

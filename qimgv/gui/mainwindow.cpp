@@ -5,9 +5,6 @@
 #include <QMimeData>
 using namespace Qt::StringLiterals;
 #ifdef Q_OS_WIN
-#include <windows.h>
-#include <dwmapi.h>  // 需要链接 dwmapi.lib
-#pragma comment(lib, "dwmapi.lib")
 #endif
 // TODO: nuke this and rewrite
 MW::MW(QWidget *parent)
@@ -406,6 +403,10 @@ void MW::showEvent(QShowEvent *event) {
             }
         });
     }
+    // 全屏期间被最小化再恢复会触发自发 Show 事件，Qt 的 QWindows11Style 会重新置 DWM 圆角；
+    // saved 表示正处于全屏会话（首次显示时尚未进入全屏入口），此时需重新禁用直到下次切换
+    if(isFullScreen() && m_fullscreenChromeState.saved)
+        winDisableFullscreenChrome(winId());
 }
 
 void MW::mouseMoveEvent(QMouseEvent *event) {
@@ -647,72 +648,24 @@ void MW::showFullScreen() {
         targetScreen = QGuiApplication::primaryScreen();
     }
 
-    // ⭐ 修复 1：用 screen()->geometry() 覆盖整个物理屏幕
+    // 用 screen()->geometry() 覆盖整个物理屏幕
     QRect fullScreenRect = targetScreen->geometry();
 
-    // ⭐ 修复 2：移除所有窗口装饰（包括 Win11 的圆角/阴影预留空间）
+    // 移除所有窗口装饰（包括 Win11 的圆角/阴影预留空间）
     setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
     
-    // ⭐ 修复 3：使用原生全屏模式（更符合 Win11 规范）
+    // 使用原生全屏模式（更符合 Win11 规范）
     QWidget::showFullScreen();
-    
-    // ⭐ 修复 4：强制设置几何，覆盖可能的系统预留空间
-    setGeometry(fullScreenRect);
-    
-    // ⭐ 修复 5：在 Win11 下刷新窗口属性
-    #ifdef Q_OS_WIN
-        HWND hwnd = reinterpret_cast<HWND>(this->winId());
-        if (hwnd) {
-            // 移除 Windows 11 的圆角扩展（DWMWA_WINDOW_CORNER_PREFERENCE）
-            // 值 2 = DWMWCP_DONOTROUND
-            DWM_WINDOW_CORNER_PREFERENCE cornerPreference = DWMWCP_DONOTROUND;
-            DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_WINDOW_CORNER_PREFERENCE,
-                &cornerPreference,
-                sizeof(cornerPreference)
-            );
-            
-            // 移除窗口阴影（DWMWA_NCRENDERING_POLICY）
-            // 值 1 = DWMNCRP_DISABLED
-            DWMNCRENDERINGPOLICY ncrp = DWMNCRP_DISABLED;
-            DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_NCRENDERING_POLICY,
-                &ncrp,
-                sizeof(ncrp)
-            );
-        }
-    #endif
+    // 全屏时禁用 DWM 圆角与 1px 边框（消除屏幕四周白色细线 + 白色圆角）
+    winSetFullscreenChrome(winId(), true, m_fullscreenChromeState);
     emit fullscreenStateChanged(true);
 }
 
 void MW::showWindowed() {
-    if (isFullScreen()) {
-    #ifdef Q_OS_WIN
-        HWND hwnd = reinterpret_cast<HWND>(this->winId());
-        if (hwnd) {
-            // 恢复窗口圆角和阴影
-            DWM_WINDOW_CORNER_PREFERENCE cornerPreference = DWMWCP_ROUND;
-            DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_WINDOW_CORNER_PREFERENCE,
-                &cornerPreference,
-                sizeof(cornerPreference)
-            );
-            
-            DWMNCRENDERINGPOLICY ncrp = DWMNCRP_ENABLED;
-            DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_NCRENDERING_POLICY,
-                &ncrp,
-                sizeof(ncrp)
-            );
-        }
-    #endif
+    if(isFullScreen()) {
         QWidget::showNormal();
-        // 恢复窗口标饰（如果有的话）
-        setWindowFlags(Qt::Window);
+        // 退出全屏：恢复进入前保存的 DWM 圆角偏好与边框颜色
+        winSetFullscreenChrome(winId(), false, m_fullscreenChromeState);
     }
     restoreWindowGeometry();
     QWidget::show();
