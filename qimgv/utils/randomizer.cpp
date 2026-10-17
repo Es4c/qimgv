@@ -24,7 +24,7 @@ void Randomizer::shuffle() {
     std::shuffle(vec.begin(), vec.end(), rng);
     for(size_t i = 0; i < vec.size(); ++i)
         indexMap[vec[i]] = i;
-    remainingInRound = vec.size() > 0 ? vec.size() - 1 : 0;
+    remainingInRound = vec.empty() ? 0 : vec.size() - 1;
 }
 
 void Randomizer::setCurrent(size_t _current) {

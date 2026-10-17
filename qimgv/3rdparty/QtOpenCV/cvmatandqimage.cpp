@@ -174,7 +174,7 @@ cv::Mat image2Mat(const QImage &img, int requiredType, MatColorOrder requiredOrd
                             const uchar *s = mat.ptr<uchar>(r);
                             uchar *d = out.ptr<uchar>(r);
                             for (int c = 0; c < mat.cols; ++c) {
-                                d[c] = static_cast<uchar>((4899u * s[1] + 9617u * s[2] + 1868u * s[3] + 8192u) >> 14);
+                                d[c] = static_cast<uchar>((4899u * s[1] + 9617u * s[2] + 1868u * s[3] + 8192u) >> 14u);
                                 s += 4;
                             }
                         }
