@@ -1415,6 +1415,11 @@ void Core::onModelItemUpdated(const QString& filePath) {
 }
 
 void Core::onModelSortingChanged(SortingMode mode) {
+    // ⭐ 排序变化会重排文件下标，而乱序模式的置换是建立在下标之上的：
+    // 必须按新下标重新锚定当前项，否则 next/prev 会原地不动或跳一张。
+    // 只重锚、不重洗（旧代码在 readSettings 里整表重洗，会打断正在进行的乱序播放顺序）
+    if(shuffle)
+        randomizer.setCurrent(static_cast<size_t>(model->indexOfFile(state.currentFilePath)));
     mw->onSortingChanged(mode);
 }
 

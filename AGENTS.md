@@ -32,7 +32,7 @@ Options: `-DVIDEO_SUPPORT` (defines `USE_MPV`), `-DOPENCV_SUPPORT` (defines `USE
 ## Architecture
 
 - Entry: `qimgv/main.cpp` → `Core` (`qimgv/core.cpp|h`) orchestrates everything → `MW` main window (`qimgv/gui/mainwindow.h`).
-- `qimgv/components/`: `directorymodel` + `directorypresenter`, `loader/`, `scaler/`, `cache/`, `directorymanager/` (+ `watchers/windows/` only on WIN32), `actionmanager/`, `scriptmanager/`.
+- `qimgv/components/`: `directorymodel`, `loader/`, `scaler/`, `cache/`, `directorymanager/` (+ `watchers/windows/` only on WIN32), `actionmanager/`, `scriptmanager/`.
 - `qimgv/sourcecontainers/`: `Image` / `ImageStatic` / `ImageAnimated` / `Video` / `DocumentInfo`.
 - `qimgv/gui/`: `centralwidget`, `viewers/`, `panels/`, `overlays/`, `dialogs/`, `customwidgets/`.
 - `qimgv/utils/`: cross-cutting helpers (`settings` adjacent at `qimgv/settings.cpp`, `imagefactory`, `fileoperations`, `inputmap`/`actions`/`shortcutbuilder`, `win11window`).

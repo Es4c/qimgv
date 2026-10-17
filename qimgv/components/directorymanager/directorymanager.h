@@ -30,8 +30,7 @@ enum FileListSource {
     SOURCE_DIRECTORY,
     SOURCE_DIRECTORY_RECURSIVE,
     // 仅枚举子目录的轻量列表（相邻目录切换用），目录路径仍然有效
-    SOURCE_DIRECTORY_DIRS_ONLY,
-    SOURCE_LIST
+    SOURCE_DIRECTORY_DIRS_ONLY
 };
 
 class DirectoryManager;
@@ -117,9 +116,6 @@ public:
     void removeDirEntry(const QString &dirPath);
     void renameDirEntry(const DirPath &oldDirPath, const DirName &newDirName);
 
-    // 内联优化：移至头文件
-    inline FileListSource source() const { return mListSource; }
-
     QStringList fileList() const;
 
     // watcher events guard to avoid race when DirectoryModel does local rename/move/remove
@@ -159,16 +155,15 @@ private:
     void processPendingAdditions(const QVector<QString> &adds);
     void processPendingModifications(const QSet<QString> &modifies);
 
-    // ⭐ 批量重命名内部实现：只做 vector 操作，不 rebuild、不 emit，由调用方 rebuild+emit；
-    // 当前逐条即时 rebuild+emit，保证链式 rename 索引与视图增量一致，
+    // ⭐ 批量重命名内部实现：只做 vector 操作，不 rebuild、不 emit，由调用方处理
+    // （文件重命名还需 emit，目录重命名只需 rebuild+索引映射）。
+    // 当前逐条即时 rebuild，保证链式 rename 索引与视图增量一致，
     // 真 O(k) 批量需模型/视图批量协议，暂以正确性优先（勿删逐条 rebuild）
     struct FileRenameEmit { QString from; int fromIndex; QString to; int toIndex; };
-    struct DirRenameEmit { QString from; int fromIndex; QString to; int toIndex; };
     bool renameFileEntryBatch(const QString &oldPath, const QString &newName,
                               FileRenameEmit &emitOut, QVector<QPair<QString,int>> &extraRemoves,
                               QVector<QString> &extraAdds, QVector<QString> &extraRefresh);
-    bool renameDirEntryBatch(const QString &oldPath, const QString &newName,
-                             DirRenameEmit &emitOut);
+    bool renameDirEntryBatch(const QString &oldPath, const QString &newName);
 
 private:
     // ⭐ 后缀按长度分桶：目录扫描时每个文件只与同长度的少量后缀做
@@ -243,7 +238,4 @@ signals:
     void fileModified(QString filePath);
     void fileAdded(QString filePath);
     void fileRenamed(QString fromPath, int indexFrom, QString toPath, int indexTo);
-    void dirRemoved(QString dirPath, int);
-    void dirAdded(QString dirPath);
-    void dirRenamed(QString fromPath, int indexFrom, QString toPath, int indexTo);
 };

@@ -21,7 +21,11 @@ void Randomizer::shuffle() {
 }
 
 void Randomizer::setCurrent(size_t _current) {
-    currentIndex = indexOf(_current);
+    // ⭐ 下标无效时（如 indexOfFile() 返回 -1 被转换、条目已被删除）保持当前位置：
+    // 旧实现会存入 size_t(-1)，随后 next()/prev() 用该下标访问 vec，属越界读
+    const size_t pos = indexOf(_current);
+    if(pos != size_t(-1))
+        currentIndex = pos;
 }
 
 size_t Randomizer::indexOf(size_t item) {

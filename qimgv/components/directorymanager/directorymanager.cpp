@@ -684,14 +684,12 @@ bool DirectoryManager::renameFileEntryBatch(const QString &oldPath, const QStrin
     return true;
 }
 
-bool DirectoryManager::renameDirEntryBatch(const QString &oldPath, const QString &newName,
-                                           DirRenameEmit &emitOut) {
+bool DirectoryManager::renameDirEntryBatch(const QString &oldPath, const QString &newName) {
     if(!containsDir(oldPath))
         return false;
     QFileInfo fi(oldPath);
     const QString newDirPath = fi.absolutePath() + "/" + newName;
     int oldIndex = indexOfDir(oldPath);
-    const int emitOldIndex = oldIndex;
     const int replaceIndex = containsDir(newDirPath) ? indexOfDir(newDirPath) : -1;
     if(replaceIndex != -1) {
         if(replaceIndex < oldIndex) {
@@ -707,11 +705,9 @@ bool DirectoryManager::renameDirEntryBatch(const QString &oldPath, const QString
     newEntry.path = newDirPath;
     newEntry.isDirectory = true;
     auto cmpFn = compareFunction();
-    auto it = insert_sorted(dirEntryVec, std::move(newEntry), [this, cmpFn](const FSEntry& a, const FSEntry& b) {
+    insert_sorted(dirEntryVec, std::move(newEntry), [this, cmpFn](const FSEntry& a, const FSEntry& b) {
         return (this->*cmpFn)(a, b);
     });
-    const int newIndex = static_cast<int>(it - dirEntryVec.begin());
-    emitOut = {oldPath, emitOldIndex, newDirPath, newIndex};
     return true;
 }
 
@@ -757,7 +753,6 @@ bool DirectoryManager::insertDirEntry(const QString &dirPath) {
     int index = static_cast<int>(it - dirEntryVec.begin());
     // 同步更新索引映射
     updateDirIndexAfterInsert(dirPath, index);
-    emit dirAdded(dirPath);
     return true;
 }
 
@@ -768,15 +763,12 @@ void DirectoryManager::removeDirEntry(const QString &dirPath) {
     dirEntryVec.erase(dirEntryVec.begin() + index);
     // 同步更新索引映射
     updateDirIndexAfterRemove(dirPath, index);
-    emit dirRemoved(dirPath, index);
 }
 
 void DirectoryManager::renameDirEntry(const DirPath& oldDirPath, const DirName& newDirName) {
-    DirRenameEmit emitInfo;
-    if(!renameDirEntryBatch(oldDirPath.value, newDirName.value, emitInfo))
+    if(!renameDirEntryBatch(oldDirPath.value, newDirName.value))
         return;
     rebuildDirIndexMap();
-    emit dirRenamed(emitInfo.from, emitInfo.fromIndex, emitInfo.to, emitInfo.toIndex);
 }
 
 QStringList DirectoryManager::fileList() const {
@@ -928,7 +920,7 @@ void DirectoryManager::processPendingRenames(const QVector<QPair<QString, QStrin
     if(renames.isEmpty() || !watcher)
         return;
 
-    // ⭐ 逐条即时 rebuild+emit，保证索引与视图增量一致（链式 rename 依赖新鲜索引）
+    // ⭐ 逐条即时 rebuild（文件重命名还需 emit），保证索引与视图增量一致（链式 rename 依赖新鲜索引）
     const QString base = watcher->watchPath();
     for(const auto &r : renames) {
         const QString &oldPath = r.first;
@@ -936,11 +928,8 @@ void DirectoryManager::processPendingRenames(const QVector<QPair<QString, QStrin
 
         // ⭐ 优先用已有索引判断（避免文件系统时序问题）
         if(containsDir(oldPath)) {
-            DirRenameEmit emitInfo;
-            if(renameDirEntryBatch(oldPath, newName, emitInfo)) {
+            if(renameDirEntryBatch(oldPath, newName))
                 rebuildDirIndexMap();
-                emit dirRenamed(emitInfo.from, emitInfo.fromIndex, emitInfo.to, emitInfo.toIndex);
-            }
             continue;
         }
         if(containsFile(oldPath)) {
@@ -997,29 +986,22 @@ void DirectoryManager::processPendingRemovals(const QVector<QString> &removes) {
         }
     }
 
-    // 目录删除：批量快照索引 → 一次性擦除 → 单次重建 → 从高到低 emit
+    // 目录删除：批量快照路径 → 一次性擦除 → 单次重建索引
     {
-        QVector<QPair<QString, int>> toRemove;
+        QVector<QString> toRemove;
         for(const auto &p : paths)
             if(containsDir(p))
-                toRemove.append(QPair<QString, int>(p, indexOfDir(p)));
+                toRemove.append(p);
         if(!toRemove.isEmpty()) {
             QSet<QString> removalSet;
-            for(const auto &r : toRemove) removalSet.insert(r.first);
+            for(const auto &p : toRemove) removalSet.insert(p);
             std::vector<FSEntry> survivors;
-            survivors.reserve(dirEntryVec.size() - toRemove.size());
+            survivors.reserve(dirEntryVec.size() - static_cast<size_t>(toRemove.size()));
             for(auto &e : dirEntryVec)
                 if(!removalSet.contains(e.path))
                     survivors.push_back(std::move(e));
             dirEntryVec = std::move(survivors);
             rebuildDirIndexMap();
-            // 从高到低 emit，保证视图连续删除时索引始终有效
-            std::sort(toRemove.begin(), toRemove.end(),
-                      [](const QPair<QString, int> &a, const QPair<QString, int> &b) {
-                          return a.second > b.second;
-                      });
-            for(const auto &r : toRemove)
-                emit dirRemoved(r.first, r.second);
         }
     }
 
@@ -1122,16 +1104,12 @@ void DirectoryManager::processPendingAdditions(const QVector<QString> &adds) {
         for(const auto &p : addedPaths) emit fileAdded(p);
     }
     if(!newDirs.empty()) {
-        QVector<QString> addedPaths;
-        addedPaths.reserve(static_cast<qsizetype>(newDirs.size()));
-        for(const auto &e : newDirs) addedPaths.append(e.path);
         dirEntryVec.insert(dirEntryVec.end(),
                            std::make_move_iterator(newDirs.begin()),
                            std::make_move_iterator(newDirs.end()));
         mDirsSorted = false;
         sortDirEntryListsIncremental();
         rebuildDirIndexMap();
-        for(const auto &p : addedPaths) emit dirAdded(p);
     }
 }
 

@@ -67,7 +67,8 @@ std::shared_ptr<Image> Cache::take(const QString &path) {
 bool Cache::insert(const std::shared_ptr<Image> &img) {
     if (!img) return false;
 
-    // ⭐ 字节估算（可能触发 getImage() 取参/格式探测）移到写锁之外，缩短临界区
+    // ⭐ 字节估算（getImage() 返回已解码指针 + sizeInBytes，无解码/无 I/O）移到写锁之外，
+    // 缩短临界区：估算不再占用锁，锁内只做 map/链表更新
     const QString &path = img->filePath();
     const size_t bytes = estimateBytes(img);
 
