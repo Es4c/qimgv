@@ -108,7 +108,7 @@ bool WindowsWorker::handleRestart(QString &currentPath, int &quietReads) {
     // 先使原子句柄失效，避免 GUI 线程 cancel 到旧句柄
     activeHandle.store(INVALID_HANDLE_VALUE, std::memory_order_release);
     hDirectory.close();
-    currentPath = newPath;
+    currentPath = std::move(newPath);
     HANDLE hDir = openDirectoryHandle(currentPath);
     if(hDir != INVALID_HANDLE_VALUE) {
         hDirectory = ScopedHandle(hDir);

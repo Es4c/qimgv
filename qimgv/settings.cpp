@@ -220,8 +220,8 @@ void Settings::loadStylesheet() {
         // --- apply -------------------------------------------------
         qApp->setStyleSheet(styleSheet);
         
-        // 缓存样式表
-        mCachedStylesheet = styleSheet;
+        // 缓存样式表（qApp->setStyleSheet() 已持有自己的副本，这里直接搬移避免再复制）
+        mCachedStylesheet = std::move(styleSheet);
         mStylesheetCacheValid = true;
     }
 }

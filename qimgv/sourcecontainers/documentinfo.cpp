@@ -247,7 +247,9 @@ bool DocumentInfo::detectAnimatedWebP() {
     if (std::memcmp(buf.constData() + 12, "VP8X", 4) != 0)
         return false;
 
-    return buf[20] & 0x02;
+    // VP8X flags: bit1 = 动画标志。按无符号读取，避免 char 参与带符号位运算
+    const unsigned flags = static_cast<unsigned char>(buf[20]);
+    return (flags & 0x02u) != 0;
 }
 
 bool DocumentInfo::detectAnimatedAvif() {

@@ -740,7 +740,7 @@ bool DirectoryManager::insertDirEntry(const QString &dirPath) {
     // 不再构造 directory_entry 做无谓 stat，文件名直接由路径解析
     QString dirName = FSEntry::extractFileName(dirPath);
     FSEntry newEntry;
-    newEntry.name = dirName;
+    newEntry.name = std::move(dirName);
     newEntry.path = dirPath;
     newEntry.isDirectory = true;
 
