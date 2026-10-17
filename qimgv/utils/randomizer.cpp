@@ -34,6 +34,31 @@ size_t Randomizer::indexOf(size_t item) {
     return indexMap[item];
 }
 
+bool Randomizer::remap(const std::vector<size_t> &sigma) {
+    const size_t count = vec.size();
+    if(sigma.size() != count)
+        return false;
+
+    // 先校验并写入临时置换：失败时不留下半更新的状态
+    std::vector<size_t> remapped(count);
+    std::vector<char> seen(count, 0);
+    for(size_t i = 0; i < count; ++i) {
+        const size_t oldIndex = vec[i];
+        if(oldIndex >= count)
+            return false;
+        const size_t newIndex = sigma[oldIndex];
+        if(newIndex >= count || seen[newIndex] != 0)
+            return false;
+        seen[newIndex] = 1;
+        remapped[i] = newIndex;
+    }
+
+    vec.swap(remapped);
+    for(size_t i = 0; i < count; ++i)
+        indexMap[vec[i]] = i;
+    return true;
+}
+
 void Randomizer::fill() {
     for(size_t i = 0; i < vec.size(); ++i) {
         vec[i] = i;
@@ -46,21 +71,27 @@ size_t Randomizer::next() {
     // re-shuffle when needed
     // because vector gets rearranged this will break prev()
     if(currentIndex >= vec.size() - 1) {
-        size_t currentItem = vec[currentIndex];
+        const size_t currentItem = vec[currentIndex];
         shuffle();
-        setCurrent(currentItem);
+        setCurrent(currentItem);   // 新一圈：游标重新落在当前项上
+        // 从当前项的下一位继续；当前项恰好落在末尾时绕回起点（原先 currentIndex++ 会读越界）
+        currentIndex = (currentIndex + 1) % vec.size();
+    } else {
+        ++currentIndex;
     }
-    currentIndex++;
     return vec[currentIndex];
 }
 
 size_t Randomizer::prev() {
     if(vec.empty()) return 0;
     if(currentIndex == 0) {
-        size_t currentItem = vec[currentIndex];
+        const size_t currentItem = vec[currentIndex];
         shuffle();
-        setCurrent(currentItem);
+        setCurrent(currentItem);   // 新一圈：游标重新落在当前项上
+        // 当前项落在起点时，前一项是末尾（原先 currentIndex-- 会下溢成 size_t(-1)）
+        currentIndex = (currentIndex + vec.size() - 1) % vec.size();
+    } else {
+        --currentIndex;
     }
-    currentIndex--;
     return vec[currentIndex];
 }

@@ -93,6 +93,9 @@ private:
 
     Randomizer randomizer;
     void syncRandomizer();
+    // 排序会改变文件下标，而乱序置换建立在下标之上；因此在排序前后重映射置换
+    void applySortingMode(SortingMode mode);
+    void remapShuffleIndices(const QList<QString>& previousOrder);
     
 
     void attachModel(std::unique_ptr<DirectoryModel> _model);

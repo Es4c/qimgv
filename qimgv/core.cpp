@@ -2,6 +2,7 @@
 #include <QSettings>
 #include <QMimeData>
 #include <QCryptographicHash>
+#include <vector>
 
 #ifdef __WIN32
 #include <tchar.h>
@@ -606,8 +607,52 @@ QMimeData* Core::getMimeDataForImage(const std::shared_ptr<Image>& img,
     return mimeData;
 }
 
+void Core::applySortingMode(SortingMode mode) {
+    // ⭐ 乱序模式的置换建立在“文件下标”之上，而排序会改变下标的含义（同一文件换了下标）。
+    // 因此在排序前记录文件顺序，排序后把「旧下标 → 新下标」映射进置换：
+    // 每个位置对应的文件不变，正在进行的乱序队列与游标位置都不受影响。
+    QList<QString> previousOrder;
+    if(shuffle) {
+        const int count = model->fileCount();
+        previousOrder.reserve(count);
+        for(int i = 0; i < count; ++i)
+            previousOrder.append(model->filePathAt(i));
+    }
+
+    model->setSortingMode(mode);   // 同步 emit sortingChanged，见 onModelSortingChanged
+
+    if(!previousOrder.isEmpty())
+        remapShuffleIndices(previousOrder);
+}
+
+void Core::remapShuffleIndices(const QList<QString>& previousOrder) {
+    const int count = model->fileCount();
+    if(previousOrder.size() != count) {   // 排序前后文件数不一致，旧下标已无意义
+        syncRandomizer();
+        return;
+    }
+
+    QHash<QString, int> newIndexOf;
+    newIndexOf.reserve(count);
+    for(int i = 0; i < count; ++i)
+        newIndexOf.insert(model->filePathAt(i), i);
+
+    std::vector<size_t> sigma(static_cast<size_t>(count));
+    for(int i = 0; i < count; ++i) {
+        const auto it = newIndexOf.constFind(previousOrder.at(i));
+        if(it == newIndexOf.cend()) {     // 列表在排序期间发生变化，映射不再一一对应
+            syncRandomizer();
+            return;
+        }
+        sigma[static_cast<size_t>(i)] = static_cast<size_t>(*it);
+    }
+
+    if(!randomizer.remap(sigma))
+        syncRandomizer();
+}
+
 void Core::sortBy(SortingMode mode) {
-    model->setSortingMode(mode);
+    applySortingMode(mode);
 }
 
 void Core::renameCurrentSelection(const QString& newName) {
@@ -1031,21 +1076,21 @@ void Core::sortByName() {
     auto mode = SortingMode::SORT_NAME;
     if(model->sortingMode() == mode)
         mode = SortingMode::SORT_NAME_DESC;
-    model->setSortingMode(mode);
+    applySortingMode(mode);
 }
 
 void Core::sortByTime() {
     auto mode = SortingMode::SORT_TIME;
     if(model->sortingMode() == mode)
         mode = SortingMode::SORT_TIME_DESC;
-    model->setSortingMode(mode);
+    applySortingMode(mode);
 }
 
 void Core::sortBySize() {
     auto mode = SortingMode::SORT_SIZE;
     if(model->sortingMode() == mode)
         mode = SortingMode::SORT_SIZE_DESC;
-    model->setSortingMode(mode);
+    applySortingMode(mode);
 }
 
 void Core::showRenameDialog() {
@@ -1415,11 +1460,8 @@ void Core::onModelItemUpdated(const QString& filePath) {
 }
 
 void Core::onModelSortingChanged(SortingMode mode) {
-    // ⭐ 排序变化会重排文件下标，而乱序模式的置换是建立在下标之上的：
-    // 必须按新下标重新锚定当前项，否则 next/prev 会原地不动或跳一张。
-    // 只重锚、不重洗（旧代码在 readSettings 里整表重洗，会打断正在进行的乱序播放顺序）
-    if(shuffle)
-        randomizer.setCurrent(static_cast<size_t>(model->indexOfFile(state.currentFilePath)));
+    // ⭐ 乱序置换的重映射需要“排序前”的文件顺序，而 sortingChanged 是在排序之后才发出的，
+    // 所以那件事在 applySortingMode() 里做；这里只同步界面。
     mw->onSortingChanged(mode);
 }
 

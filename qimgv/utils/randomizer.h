@@ -16,6 +16,10 @@ public:
 
     void shuffle();
     void setCurrent(size_t _current);
+    // sigma[旧下标] = 新下标：把置换重映射到新的下标空间，保持每个位置对应的“项”不变
+    //（游标即位置，因此无需改动）。长度不匹配或 sigma 不是一一映射时返回 false，
+    // 此时原状态不变，调用方应改用 setCount() + shuffle() 重建。
+    bool remap(const std::vector<size_t> &sigma);
 private:
     size_t currentIndex;
     std::vector<size_t> vec;
