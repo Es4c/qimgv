@@ -611,8 +611,11 @@ void Core::applySortingMode(SortingMode mode) {
     // ⭐ 乱序模式的置换建立在“文件下标”之上，而排序会改变下标的含义（同一文件换了下标）。
     // 因此在排序前记录文件顺序，排序后把「旧下标 → 新下标」映射进置换：
     // 每个位置对应的文件不变，正在进行的乱序队列与游标位置都不受影响。
+    // 是否重映射取决于 shuffle 状态而非快照是否为空：乱序开着但目录为空时快照同样是空的，
+    // 此时也要走 remapShuffleIndices()，由其中的数量校验决定重映射还是回退重建。
+    const bool shouldRemap = shuffle;
     QList<QString> previousOrder;
-    if(shuffle) {
+    if(shouldRemap) {
         const int count = model->fileCount();
         previousOrder.reserve(count);
         for(int i = 0; i < count; ++i)
@@ -621,7 +624,7 @@ void Core::applySortingMode(SortingMode mode) {
 
     model->setSortingMode(mode);   // 同步 emit sortingChanged，见 onModelSortingChanged
 
-    if(!previousOrder.isEmpty())
+    if(shouldRemap)
         remapShuffleIndices(previousOrder);
 }
 

@@ -22,9 +22,12 @@ public:
     bool remap(const std::vector<size_t> &sigma);
 private:
     size_t currentIndex;
+    // 当前圈剩余步数：以当前项为锚，一圈恰好把其余每张各走一次，走完才重洗
+    size_t remainingInRound;
     std::vector<size_t> vec;
     std::vector<size_t> indexMap;  // indexMap[value] = position in vec
     std::mt19937 rng;
     void fill();
+    void startNewRound();
     size_t indexOf(size_t item);
 };
