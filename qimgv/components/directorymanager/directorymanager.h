@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QCollator>
+#include <QDateTime>
 #include <QSet>
 #include <QTimer>
 #include <QVector>
@@ -28,6 +29,8 @@ enum FileListSource {
     // rename? wip
     SOURCE_DIRECTORY,
     SOURCE_DIRECTORY_RECURSIVE,
+    // 仅枚举子目录的轻量列表（相邻目录切换用），目录路径仍然有效
+    SOURCE_DIRECTORY_DIRS_ONLY,
     SOURCE_LIST
 };
 
@@ -51,7 +54,8 @@ public:
     
     // 内联优化：移至头文件
     inline QString directoryPath() const {
-        if(mListSource == SOURCE_DIRECTORY || mListSource == SOURCE_DIRECTORY_RECURSIVE)
+        if(mListSource == SOURCE_DIRECTORY || mListSource == SOURCE_DIRECTORY_RECURSIVE ||
+           mListSource == SOURCE_DIRECTORY_DIRS_ONLY)
             return mDirectoryPath;
         return "";
     }
@@ -180,6 +184,11 @@ private:
     DirectoryWatcher* watcher = nullptr;
     SortingMode mSortingMode = SORT_NAME;
     FileListSource mListSource = SOURCE_DIRECTORY;
+    // setDirectoryDirsOnly 复用缓存有效性：父目录 mtime + 排序设置（排序模式/文件夹排序）
+    // 全部一致才跳过重扫。next/prevDirectory 每次按键都会走到这里
+    QDateTime mDirsOnlyMtime;
+    SortingMode mDirsOnlySortingMode = SORT_NAME;
+    bool mDirsOnlySortFolders = false;
     // 替代 static const QString emptyString - 线程安全且性能更好
     QString mEmptyString;
     bool mIgnoreWatcherEvents = false;

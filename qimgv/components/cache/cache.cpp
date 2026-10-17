@@ -67,10 +67,11 @@ std::shared_ptr<Image> Cache::take(const QString &path) {
 bool Cache::insert(const std::shared_ptr<Image> &img) {
     if (!img) return false;
 
-    std::unique_lock lock(mRWLock);
-
+    // ⭐ 字节估算（可能触发 getImage() 取参/格式探测）移到写锁之外，缩短临界区
     const QString &path = img->filePath();
     const size_t bytes = estimateBytes(img);
+
+    std::unique_lock lock(mRWLock);
 
     auto it = items.find(path);
     if (it != items.end()) {

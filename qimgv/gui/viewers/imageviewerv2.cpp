@@ -353,7 +353,8 @@ void ImageViewerV2::onAnimationTimer()
 
     // 缩小播放时直接走已缩放帧流水线，避免每帧全尺寸上传+绘制缩放
     if (pixmapItem.scale() < 1.0f) {
-        const QSize target = scaledSizeR() * dpr;
+        // scaledSizeR() 已是设备像素（= 屏上实际占用的像素），再乘 dpr 会多出 dpr² 倍像素
+        const QSize target = scaledSizeR();
         if (target.isValid() && !target.isEmpty()) {
             setScaledPixmap(frame.scaled(target, Qt::KeepAspectRatio, Qt::FastTransformation));
             emit frameChanged(movie->currentFrameNumber());
@@ -518,7 +519,7 @@ void ImageViewerV2::closeImage()
 
 void ImageViewerV2::setScaledPixmap(const QPixmap& newFrame)
 {
-    if (!movie && newFrame.size() != scaledSizeR() * dpr)
+    if (!movie && newFrame.size() != scaledSizeR())
         return;
 
     pixmapScaled = newFrame;
@@ -530,7 +531,7 @@ void ImageViewerV2::setScaledPixmap(const QPixmap& newFrame)
 
 void ImageViewerV2::setScaledPixmap(QPixmap&& newFrame)
 {
-    if (!movie && newFrame.size() != scaledSizeR() * dpr)
+    if (!movie && newFrame.size() != scaledSizeR())
         return;
 
     pixmapScaled = std::move(newFrame);
@@ -730,7 +731,9 @@ void ImageViewerV2::requestScaling()
         scaleTimer->stop();
 
     if (scale < FAST_SCALE_THRESHOLD) {
-        const QSize requested = scaledSizeR() * dpr;
+        // scaledSizeR() 是设备像素：结果 pixmap 会带 dpr 显示，
+        // 若再乘 dpr，换入时尺寸会放大 dpr 倍且像素数多出 dpr² 倍
+        const QSize requested = scaledSizeR();
         if (lastRequestedScale > 0 && qFuzzyCompare(1.0 + scale, 1.0 + lastRequestedScale)) {
             // avoid repeated identical scale requests
             return;
@@ -971,9 +974,11 @@ void ImageViewerV2::fitWidth()
     QPointF center = mapToScene(viewport()->rect().center());
     if (qRound(img.width()) <= viewportW)
         center.setX(img.center().x());
+    // 高度判断与 viewport 同为逻辑像素（scene 尺寸）：
+    // scaledSizeR() 是设备像素，直接比较在 HiDPI 下会把本可垂直容纳的图误判为超高
     if (qRound(img.height()) <= viewportH)
         center.setY(img.center().y());
-    if (scaledSizeR().height() > viewportH)
+    else
         center.setY(0);
 
     centerOn(snappedCenter(center));
@@ -1041,9 +1046,10 @@ void ImageViewerV2::fitFree(float scale)
         QPointF center = mapToScene(viewport()->rect().center());
         if (qRound(img.width()) <= viewport()->width())
             center.setX(img.center().x());
+        // 高度判断与 viewport 同为逻辑像素（scene 尺寸），见 fitWidth() 中的说明
         if (qRound(img.height()) <= viewportH)
             center.setY(img.center().y());
-        if (scaledSizeR().height() > viewportH) {
+        else {
             center.setX(img.center().x());
             center.setY(0);
         }
@@ -1547,8 +1553,11 @@ bool ImageViewerV2::scaledImageFits() const
     if (!pixmap)
         return true;
 
-    QSize sz = scaledSizeR();
-    return (sz.width() <= viewport()->width() && sz.height() <= viewport()->height());
+    // scaledSizeR() 与 imageFitsInternal() 同为设备像素口径：
+    // viewport 是逻辑像素，需乘 dpr 换算，否则 HiDPI 下会误判"图放不下"
+    const QSize sz = scaledSizeR();
+    return (sz.width() <= static_cast<int>(static_cast<float>(viewport()->width()) * dpr) &&
+            sz.height() <= static_cast<int>(static_cast<float>(viewport()->height()) * dpr));
 }
 
 ScalingFilter ImageViewerV2::scalingFilter() const

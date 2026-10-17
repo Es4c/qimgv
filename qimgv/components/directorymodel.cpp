@@ -3,16 +3,13 @@
 #include <QScopeGuard>
 
 DirectoryModel::DirectoryModel(QObject *parent)
-    : QObject(parent), fileListSource(SOURCE_DIRECTORY) {
-    scaler = new Scaler(&cache);
+    : QObject(parent) {
+    scaler = new Scaler();
 
     connect(&dirManager, &DirectoryManager::fileRemoved, this, &DirectoryModel::onFileRemoved);
     connect(&dirManager, &DirectoryManager::fileAdded, this, &DirectoryModel::onFileAdded);
     connect(&dirManager, &DirectoryManager::fileRenamed, this, &DirectoryModel::onFileRenamed);
     connect(&dirManager, &DirectoryManager::fileModified, this, &DirectoryModel::onFileModified);
-    connect(&dirManager, &DirectoryManager::dirRemoved, this, &DirectoryModel::dirRemoved);
-    connect(&dirManager, &DirectoryManager::dirAdded, this, &DirectoryModel::dirAdded);
-    connect(&dirManager, &DirectoryManager::dirRenamed, this, &DirectoryModel::dirRenamed);
     connect(&dirManager, &DirectoryManager::loaded, this, &DirectoryModel::loaded);
     connect(&dirManager, &DirectoryManager::sortingChanged, this, &DirectoryModel::onSortingChanged);
     connect(&loader, &Loader::loadFinished, this, &DirectoryModel::onImageReady);
@@ -70,10 +67,6 @@ const QString &DirectoryModel::dirPathAt(int index) const {
 
 bool DirectoryModel::autoRefresh() {
     return dirManager.fileWatcherActive();
-}
-
-FileListSource DirectoryModel::source() {
-    return dirManager.source();
 }
 
 const QString DirectoryModel::directoryPath() const {
@@ -254,8 +247,7 @@ bool DirectoryModel::saveFile(const QString &filePath, const QString &destPath) 
                     dirManager.updateFileEntry(destPath);
                     emit fileModified(destPath);
                 } else if(dirManager.insertFileEntry(destPath)) {
-                    // 新文件已插入（insertFileEntry 内部会 emit fileAdded，
-                    // 此处不再 emit，避免 DirectoryPresenter 重复插入列表项）
+                    // 新文件已插入，insertFileEntry 内部已 emit fileAdded，此处不再重复 emit
                 }
             }
         }

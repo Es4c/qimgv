@@ -5,14 +5,13 @@
 #include <QMutex>
 #include <QPixmap>
 #include <atomic>
-#include "components/cache/cache.h"
 #include "scalerrequest.h"
 #include "scalerrunnable.h"
 
 class Scaler : public QObject {
     Q_OBJECT
 public:
-    explicit Scaler(Cache *_cache, QObject *parent = nullptr);
+    explicit Scaler(QObject *parent = nullptr);
     ~Scaler() override;
 
 signals:
@@ -31,7 +30,6 @@ private:
     void startRequest(const ScalerRequest &req);
 
     QThreadPool *pool;
-    Cache *cache;
 
     bool buffered;
     bool running;

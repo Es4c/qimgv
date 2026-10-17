@@ -326,6 +326,12 @@ private:
     mutable bool mUsePreloaderCacheValid;
     mutable bool mCachedUnlockMinZoom;
     mutable bool mUnlockMinZoomCacheValid;
+
+    // 缓存布尔设置值（缩放/加载热路径：smoothUpscaling 每次缩放请求、videoPlayback 每个加载任务）
+    mutable bool mCachedSmoothUpscaling;
+    mutable bool mSmoothUpscalingCacheValid;
+    mutable bool mCachedVideoPlayback;
+    mutable bool mVideoPlaybackCacheValid;
     
     // 缓存字符串列表
     mutable QStringList mCachedSavedPaths;

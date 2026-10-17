@@ -44,6 +44,20 @@ void ImageAnimated::loadMovie(int allocationLimitMB) {
     }
 
     mSize = mFrames.isEmpty() ? QSize(0, 0) : mFrames.at(0)->size();
+
+    // ⭐ 与 ImageStatic::loadGeneric 一致：解码期把文本元数据喂给 DocumentInfo，
+    // 面板 getExifTags 不再在 GUI 线程兜底打开文件。
+    // 用独立 reader：元数据查询不能干扰 mReader 的顺序帧读取状态
+    if (mDocInfo) {
+        QImageReader metaReader(mPath);
+        QHash<QString, QString> metadata;
+        for (const QString &key : metaReader.textKeys()) {
+            const QString value = metaReader.text(key);
+            if (!value.isEmpty())
+                metadata.insert(key, value);
+        }
+        mDocInfo->setCachedTextMetadata(std::move(metadata), mSize);
+    }
 }
 
 int ImageAnimated::frameCount() const {

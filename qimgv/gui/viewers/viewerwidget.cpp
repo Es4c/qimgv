@@ -661,16 +661,18 @@ void ViewerWidget::keyPressEvent(QKeyEvent *event) {
         videoPlayer->pauseResume();
         return;
     }
+    // ⭐ 快捷键字符串只构建一次：Up 特判与最终分发复用同一结果（processEvent 内部会再构建一次）
+    const QString shortcut = ShortcutBuilder::fromEvent(event);
     if(currentWidget == IMAGEVIEWER && imageViewer->isDisplaying()) {
         // switch to fitWidth via up arrow
-        if(ShortcutBuilder::fromEvent(event) == "Up" && !actionManager->actionForShortcut("Up").isEmpty()) {
+        if(shortcut == "Up" && !actionManager->actionForShortcut(shortcut).isEmpty()) {
             if(imageViewer->fitMode() == FIT_WINDOW && imageViewer->scaledImageFits()) {
                 imageViewer->setFitWidth();
                 return;
             }
         }
     }
-    actionManager->processEvent(event);
+    actionManager->invokeActionForShortcut(shortcut);
 }
 
 void ViewerWidget::leaveEvent(QEvent *event) {

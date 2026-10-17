@@ -31,8 +31,10 @@ void Core::readSettings() {
     loopSlideshow = settings->loopSlideshow();
     folderEndAction = settings->folderEndAction();
     slideshowTimer.setInterval(settings->slideshowInterval());
-    if(shuffle)
-        syncRandomizer();
+    // ⭐ 此处原先会 syncRandomizer()（O(n) Fisher-Yates）：settingsChanged 是粗粒度信号，
+    // 连改透明网格都会触发无意义的重新洗牌，还会打乱正在进行的乱序播放顺序。
+    // syncRandomizer() 不读取任何设置值：目录切换（onModelLoaded/attachModel）与
+    // 手动开关 shuffle 时已各自同步，故不再随设置变化重洗
 }
 
 void Core::showGui() {
@@ -1235,50 +1237,43 @@ void Core::nextDirectory() {
     if(model->directoryPath().isEmpty())
         return;
     stopSlideshow();
-    QFileInfo currentDir(model->directoryPath());
-    QFileInfo parentDir(currentDir.absolutePath());
-    if(parentDir.exists() && parentDir.isReadable()) {
-        DirectoryManager dm;
-        if(!dm.setDirectoryDirsOnly(parentDir.absoluteFilePath()))
+    // 复用 siblingDirs 成员（内部按父目录 mtime + 排序设置缓存）：原先每次按键都新建
+    // 临时 DirectoryManager 并全量重枚举父目录；父目录不存在/不可读时返回 false
+    if(!siblingDirs.setDirectoryDirsOnly(QFileInfo(model->directoryPath()).absolutePath()))
+        return;
+    const QString next = siblingDirs.nextOfDir(model->directoryPath());
+    if(!next.isEmpty()) {
+        if(!setDirectory(next))
             return;
-        QString next = dm.nextOfDir(model->directoryPath());
-        if(!next.isEmpty()) {
-            if(!setDirectory(next))
-                return;
-            QFileInfo fi(next);
-            mw->showMessageDirectory(fi.baseName());
-            if(model->fileCount())
-                loadFileIndex(0, false, true);
-        } else {
-            mw->showMessageDirectoryEnd();
-        }
+        QFileInfo fi(next);
+        mw->showMessageDirectory(fi.baseName());
+        if(model->fileCount())
+            loadFileIndex(0, false, true);
+    } else {
+        mw->showMessageDirectoryEnd();
     }
 }
 
 void Core::prevDirectory(bool selectLast) {
     if(model->directoryPath().isEmpty())
         return;
-    QFileInfo currentDir(model->directoryPath());
-    QFileInfo parentDir(currentDir.absolutePath());
-    if(parentDir.exists() && parentDir.isReadable()) {
-        DirectoryManager dm;
-        if(!dm.setDirectoryDirsOnly(parentDir.absoluteFilePath()))
+    // 见 nextDirectory()：复用带缓存的 siblingDirs，避免每次按键重扫父目录
+    if(!siblingDirs.setDirectoryDirsOnly(QFileInfo(model->directoryPath()).absolutePath()))
+        return;
+    const QString prev = siblingDirs.prevOfDir(model->directoryPath());
+    if(!prev.isEmpty()) {
+        if(!setDirectory(prev))
             return;
-        QString prev = dm.prevOfDir(model->directoryPath());
-        if(!prev.isEmpty()) {
-            if(!setDirectory(prev))
-                return;
-            QFileInfo fi(prev);
-            mw->showMessageDirectory(fi.baseName());
-            if(model->fileCount()) {
-                if(selectLast)
-                    loadFileIndex(model->fileCount() - 1, false, true);
-                else
-                    loadFileIndex(0, false, true);
-            }
-        } else {
-            mw->showMessageDirectoryStart();
+        QFileInfo fi(prev);
+        mw->showMessageDirectory(fi.baseName());
+        if(model->fileCount()) {
+            if(selectLast)
+                loadFileIndex(model->fileCount() - 1, false, true);
+            else
+                loadFileIndex(0, false, true);
         }
+    } else {
+        mw->showMessageDirectoryStart();
     }
 }
 

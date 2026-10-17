@@ -132,6 +132,10 @@ void ImageStatic::loadICO() {
 
     image = std::make_shared<const QImage>(std::move(img));
     mLoaded = true;
+    // ⭐ 与 loadGeneric 一致：解码期喂给 DocumentInfo，面板 getExifTags 不再在
+    //    GUI 线程兜底打开文件。ICO 无文本元数据，只需带上实际解码帧的尺寸供 "Dimensions"
+    if(mDocInfo)
+        mDocInfo->setCachedTextMetadata({}, image->size());
 }
 
 QString ImageStatic::generateHash(QStringView str) noexcept {
@@ -275,7 +279,9 @@ void ImageStatic::getPixmap(QPixmap& outPixmap) const {
         return;
     }
 
-    mCachedPixmap = QPixmap::fromImage(img);
+    mCachedPixmap = (img.format() == QImage::Format_ARGB32_Premultiplied)
+                        ? QPixmap::fromImage(img, Qt::NoFormatConversion)  // 已是 pixmap 首选格式，省一次整图格式转换
+                        : QPixmap::fromImage(img);
     mCachedPixmapKey = key;
     outPixmap = mCachedPixmap;
 }

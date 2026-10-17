@@ -53,16 +53,12 @@ public:
     bool saveFile(const QString &filePath);
     bool saveFile(const QString &filePath, const QString &destPath);
     bool containsDir(const QString &dirPath) const;
-    FileListSource source();
 
 signals:
     void fileRemoved(const QString &filePath, int index);
     void fileRenamed(const QString &fromPath, int indexFrom, const QString &toPath, int indexTo);
     void fileAdded(QString filePath);
     void fileModified(QString filePath);
-    void dirRemoved(QString dirPath, int index);
-    void dirRenamed(QString dirPath, int indexFrom, QString toPath, int indexTo);
-    void dirAdded(QString dirPath);
     void loaded(QString filePath);
     void loadFailed(const QString &path);
     void sortingChanged(SortingMode);
@@ -74,7 +70,6 @@ private:
     DirectoryManager dirManager;
     Loader loader;
     Cache cache;
-    FileListSource fileListSource;
 
 private slots:
     void onImageReady(const std::shared_ptr<Image> &img, const QString &path);

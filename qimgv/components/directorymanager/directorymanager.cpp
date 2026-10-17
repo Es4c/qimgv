@@ -27,17 +27,11 @@ DirectoryManager::~DirectoryManager() {
 }
 
 namespace {
-// setDirectory/setDirectoryRecursive/setDirectoryDirsOnly 共用前导检查：单次 status 判存在与类型，QFileInfo 判可读
-bool isReadableDir(const QString &dirPath) {
-    if(dirPath.isEmpty())
-        return false;
-    std::error_code ec;
-    std::filesystem::path pathObj(dirPath.toStdWString());
-    const auto st = std::filesystem::status(pathObj, ec);
-    if(ec || !std::filesystem::is_directory(st))
-        return false;
-    QFileInfo dirInfo(dirPath);
-    return dirInfo.isReadable();
+// setDirectory/setDirectoryRecursive/setDirectoryDirsOnly 共用前导检查：
+// QFileInfo 首次查询即缓存 stat 元数据，存在性/类型/可读性共享同一次系统调用
+//（原先 fs::status + QFileInfo 为两次 stat，且需 toStdWString 转换路径）
+bool isReadableDir(const QFileInfo &dirInfo) {
+    return dirInfo.exists() && dirInfo.isDir() && dirInfo.isReadable();
 }
 
 template<typename T, typename U, typename Pred>
@@ -202,8 +196,8 @@ void DirectoryManager::updateDirIndexAfterRemove(const QString &path, int index)
 // ==================== 核心功能方法 ====================
 
 bool DirectoryManager::setDirectory(const QString &dirPath) {
-    // ⭐ 单次 status 同时完成存在性与类型判断，避免重复 stat
-    if(!isReadableDir(dirPath)) {
+    // ⭐ QFileInfo 单次 stat 同时完成存在性、类型与可读性判断
+    if(!isReadableDir(QFileInfo(dirPath))) {
         return false;
     }
     mListSource = SOURCE_DIRECTORY;
@@ -216,8 +210,8 @@ bool DirectoryManager::setDirectory(const QString &dirPath) {
 }
 
 bool DirectoryManager::setDirectoryRecursive(const QString &dirPath) {
-    // ⭐ 单次 status 同时完成存在性与类型判断，避免重复 stat
-    if(!isReadableDir(dirPath)) {
+    // ⭐ QFileInfo 单次 stat 同时完成存在性、类型与可读性判断
+    if(!isReadableDir(QFileInfo(dirPath))) {
         return false;
     }
     stopFileWatcher();
@@ -229,13 +223,32 @@ bool DirectoryManager::setDirectoryRecursive(const QString &dirPath) {
     return true;
 }
 
-// 相邻目录切换用：只枚举子目录，文件元数据零 stat/零排序；临时对象使用，不启动 watcher
+// 相邻目录切换用：只枚举子目录，文件元数据零 stat/零排序；不启动 watcher
+// ⭐ 同一父目录（mtime 与排序设置均未变）时直接复用上次结果：
+// next/prevDirectory 每次按键都会调用，原先每次都要全量重枚举 + 排序 + 重建索引
 bool DirectoryManager::setDirectoryDirsOnly(const QString &dirPath) {
-    if(!isReadableDir(dirPath)) {
+    // ⭐ QFileInfo 单次 stat 缓存元数据：可读性与父目录 mtime 共用
+    const QFileInfo dirInfo(dirPath);
+    if(!isReadableDir(dirInfo)) {
         return false;
     }
-    mListSource = SOURCE_DIRECTORY;
+
+    const QDateTime mtime = dirInfo.lastModified();
+    const SortingMode sortMode = settings->sortingMode();
+    const bool sortFolders = settings->sortFolders();
+    if(mListSource == SOURCE_DIRECTORY_DIRS_ONLY && mDirectoryPath == dirPath &&
+       mDirsOnlyMtime == mtime &&
+       mDirsOnlySortingMode == sortMode && mDirsOnlySortFolders == sortFolders) {
+        return true;
+    }
+
+    mListSource = SOURCE_DIRECTORY_DIRS_ONLY;
     mDirectoryPath = dirPath;
+    // 实例会长期存活（与一次性临时对象不同），排序模式每次都从设置同步
+    mSortingMode = sortMode;
+    mDirsOnlyMtime = mtime;
+    mDirsOnlySortingMode = sortMode;
+    mDirsOnlySortFolders = sortFolders;
     fileEntryVec.clear();
     dirEntryVec.clear();
     mFileIndexMap.clear();

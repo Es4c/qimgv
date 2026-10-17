@@ -5,13 +5,13 @@
 #include <QMutex>
 #include <QClipboard>
 #include <QDrag>
-#include <QFileSystemModel>
 #include <QDesktopServices>
 #include <QTranslator>
 #include <QSettings>
 #include <QHash>
 #include "appversion.h"
 #include "settings.h"
+#include "components/directorymanager/directorymanager.h"
 #include "components/directorymodel.h"
 #include "components/scriptmanager/scriptmanager.h"
 #include "gui/mainwindow.h"
@@ -70,6 +70,8 @@ private:
 
     // components
     std::shared_ptr<DirectoryModel> model;
+    // next/prevDirectory 复用：内部按父目录 mtime 缓存子目录列表，避免每次按键全量重扫
+    DirectoryManager siblingDirs;
 
     QString lastClipboardSaveFormat = "jxl";
 

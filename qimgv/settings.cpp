@@ -38,6 +38,8 @@ Settings::Settings(QObject *parent) : QObject(parent) {
     mMemoryAllocationLimitCacheValid = false;
     mUsePreloaderCacheValid = false;
     mUnlockMinZoomCacheValid = false;
+    mSmoothUpscalingCacheValid = false;
+    mVideoPlaybackCacheValid = false;
     mSavedPathsCacheValid = false;
     mBookmarksCacheValid = false;
     mShortcutsCacheValid = false;
@@ -395,7 +397,14 @@ const QStringList &Settings::supportedMimeTypes() {
 //------------------------------------------------------------------------------
 bool Settings::videoPlayback() {
 #ifdef USE_MPV
-    return settingsConf->value("videoPlayback", true).toBool();
+    // ⭐ 每个加载任务都会读取（loader.cpp）：QSettings::value 含互斥锁与键查找，缓存后仅一次布尔判断
+    if (mVideoPlaybackCacheValid) {
+        return mCachedVideoPlayback;
+    }
+
+    mCachedVideoPlayback = settingsConf->value("videoPlayback", true).toBool();
+    mVideoPlaybackCacheValid = true;
+    return mCachedVideoPlayback;
 #else
     return false;
 #endif
@@ -403,6 +412,7 @@ bool Settings::videoPlayback() {
 
 void Settings::setVideoPlayback(bool mode) {
     settingsConf->setValue("videoPlayback", mode);
+    mVideoPlaybackCacheValid = false;
     mFormatsCacheValid = false;
     mMimeTypesCacheValid = false;
     mFormatsFilterCacheValid = false;
@@ -869,11 +879,19 @@ int Settings::slideshowInterval() {
 }
 //------------------------------------------------------------------------------
 bool Settings::smoothUpscaling() {
-    return settingsConf->value("smoothUpscaling", true).toBool();
+    // ⭐ 缩放请求热路径（core.cpp scalingRequest）：QSettings::value 含互斥锁与键查找，缓存后仅一次布尔判断
+    if (mSmoothUpscalingCacheValid) {
+        return mCachedSmoothUpscaling;
+    }
+
+    mCachedSmoothUpscaling = settingsConf->value("smoothUpscaling", true).toBool();
+    mSmoothUpscalingCacheValid = true;
+    return mCachedSmoothUpscaling;
 }
 
 void Settings::setSmoothUpscaling(bool mode) {
     settingsConf->setValue("smoothUpscaling", mode);
+    mSmoothUpscalingCacheValid = false;
 }
 //------------------------------------------------------------------------------
 bool Settings::expandImage() {

@@ -1,11 +1,10 @@
 #include "scaler.h"
 #include <QMutexLocker>
 
-Scaler::Scaler(Cache *_cache, QObject *parent)
+Scaler::Scaler(QObject *parent)
     : QObject(parent),
       buffered(false),
-      running(false),
-      cache(_cache)
+      running(false)
 {
     pool = new QThreadPool(this);
     pool->setMaxThreadCount(1);
