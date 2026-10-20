@@ -363,10 +363,16 @@ void Core::onModelLoaded() {
 
     if(currentIndex >= 0) {
         if(actualPath != previousPath) {
-            // 改键后规范键一定命中当前显示的对象（冲突时由 rekey 内部以旧条目为准覆盖）。
-            // 返回 false 只表示条目尚不存在（加载仍在途）：此时不能凭空造对象，
-            // 等加载完成落到 onModelItemReady() 时再按同一规则改键即可。
-            model->rekey(previousPath, actualPath);
+            // 旧键缺失有两种可能：加载仍在途（currentImg 还是上一张或为空），或条目已被
+            // 淘汰/缓存禁用而对象仍被显示持有。后者用显示中的对象回填规范键，避免
+            // cachedImage(actualPath) 命中另一份对象，且不重新解码。
+            // filePath() 校验归属是必须的：loadPath() 打开新文件时不重置 currentImg，
+            // 翻页在途时它仍属于上一张，绝不能回填到当前路径。
+            if(state.currentImg &&
+               samePath(state.currentImg->filePath(), previousPath))
+                model->rekey(previousPath, actualPath, state.currentImg);
+            else
+                model->rekey(previousPath, actualPath);
             state.currentFilePath = actualPath;
         }
 

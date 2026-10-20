@@ -211,8 +211,9 @@ void DirectoryModel::unload(const QString &filePath) {
     cache.remove(filePath);
 }
 
-bool DirectoryModel::rekey(const QString &oldPath, const QString &newPath) {
-    return cache.rekey(oldPath, newPath);
+bool DirectoryModel::rekey(const QString &oldPath, const QString &newPath,
+                           const std::shared_ptr<Image> &authoritative) {
+    return cache.rekey(oldPath, newPath, authoritative);
 }
 
 bool DirectoryModel::loaderBusy() const {

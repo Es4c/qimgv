@@ -64,45 +64,83 @@ std::shared_ptr<Image> Cache::take(const QString &path) {
     return img;
 }
 
-bool Cache::rekey(const QString &oldPath, const QString &newPath) {
+bool Cache::rekey(const QString &oldPath, const QString &newPath,
+                  const std::shared_ptr<Image> &authoritative) {
     if(newPath.isEmpty())
         return false;
     if(oldPath == newPath)
         return true;
 
-    std::unique_lock lock(mRWLock);
-    auto it = items.find(oldPath);
-    if(it == items.end())
-        return false;
+    // 兜底对象的字节数在锁外估算（与 insert 一致：只读已解码尺寸/文件大小，不解码）
+    const size_t authBytes = authoritative ? estimateBytes(authoritative) : 0;
+    // 被覆盖的对象在锁外析构（与 take() 同一约定）：Image 释放可能回收大块像素
+    // 缓冲、停止解码器，不能延长缓存临界区
+    [[maybe_unused]] std::shared_ptr<Image> displaced;
 
-    // 链表节点就地改键（迭代器在 erase/insert 之间保持有效），LRU 位置不变
-    ListIt node = it.value();
-    const size_t bytes = node->bytes;
+    {
+        std::unique_lock lock(mRWLock);
 
-    auto existing = items.find(newPath);
-    if(existing == items.end()) {
-        items.erase(it);
-        node->key = newPath;
-        items.insert(newPath, node);
+        auto it = items.find(oldPath);
+        if(it != items.end()) {
+            // 链表节点就地改键（迭代器在 erase/insert 之间保持有效），LRU 位置不变
+            ListIt node = it.value();
+            const size_t bytes = node->bytes;
+
+            auto existing = items.find(newPath);
+            if(existing == items.end()) {
+                items.erase(it);
+                node->key = newPath;
+                items.insert(newPath, node);
+                return true;
+            }
+
+            // 新键已被占用。若只是同一对象的另一种拼写（别名），直接丢旧键；
+            // 若是另一对象，以被改键的对象为准覆盖 —— 调用方要锚定的正是它，
+            // 保留目标对象会让 cachedImage(newPath) 返回另一份像素。
+            ListIt target = existing.value();
+            if(target->item != node->item) {
+                const size_t targetBytes = target->bytes;
+                displaced = std::move(target->item);
+                target->item = std::move(node->item);
+                target->bytes = bytes;
+                mCurrentBytes -= targetBytes;
+                mCurrentBytes += bytes;
+                moveToFront(target);
+            }
+            // 旧键无论别名还是被覆盖的冲突条目都要删除，且只扣一次字节
+            mCurrentBytes -= bytes;
+            lruList.erase(node);
+            items.erase(it);
+            return true;
+        }
+
+        // 旧键不在缓存：加载仍在途（不凭空造对象），或条目已被淘汰/缓存禁用而对象
+        // 仍被调用方持有。后者用 authoritative 回填规范键，不重新解码。
+        if(!authoritative)
+            return false;
+
+        auto existing = items.find(newPath);
+        if(existing == items.end()) {
+            lruList.push_front({newPath, authoritative, authBytes});
+            items.insert(newPath, lruList.begin());
+            mCurrentBytes += authBytes;
+        } else {
+            ListIt target = existing.value();
+            if(target->item != authoritative) {
+                const size_t targetBytes = target->bytes;
+                displaced = std::move(target->item);
+                target->item = authoritative;
+                target->bytes = authBytes;
+                mCurrentBytes -= targetBytes;
+                mCurrentBytes += authBytes;
+            }
+            // 当前图应待在 MRU 头（回填后马上会被 get/缩放命中）
+            moveToFront(target);
+        }
+        if(mCurrentBytes > mMaxBytes || items.size() > mMaxCacheSize)
+            evictLRUItems();
         return true;
     }
-
-    // 新键已被占用。若只是同一对象的另一种拼写（别名），直接丢旧键；
-    // 若是另一对象（同一文件的另一次加载/预加载），以被改键的对象为准覆盖 ——
-    // 调用方要锚定的正是它，保留目标对象会让 cachedImage(newPath) 返回另一份像素。
-    ListIt target = existing.value();
-    if(target->item != node->item) {
-        mCurrentBytes -= target->bytes;
-        target->item = std::move(node->item);
-        target->bytes = bytes;
-        mCurrentBytes += bytes;
-        moveToFront(target);
-    }
-    // 旧键无论别名还是被覆盖的冲突条目都要删除，且只扣一次字节
-    mCurrentBytes -= bytes;
-    lruList.erase(node);
-    items.erase(it);
-    return true;
 }
 
 bool Cache::insert(const QString &key, const std::shared_ptr<Image> &img) {

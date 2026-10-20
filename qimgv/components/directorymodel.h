@@ -47,10 +47,12 @@ public:
     SortingMode sortingMode() const;
     // 目录扫描完成后把图片缓存的键从用户传入路径改为枚举路径（Core::onModelLoaded），
     // 否则按当前路径做的 isLoaded()/cachedImage() 精确查找会全部 miss。
-    // 被改键的条目是权威对象：新键若属于另一对象（同一文件的另一次加载），会被它覆盖，
+    // 被改键的对象是权威对象：新键若属于另一对象（同一文件的另一次加载），会被它覆盖，
     // 保证成功后 cachedImage(newPath) 命中的就是当前显示的那个对象，不会留下两份条目。
-    // 返回 false 只表示条目尚不存在（加载仍在途），由 onModelItemReady() 补一次改键。
-    bool rekey(const QString &oldPath, const QString &newPath);
+    // 旧键已被淘汰时用 authoritative（调用方仍持有、且确认属于该路径的对象）回填，
+    // 不重新解码；authoritative 为空则返回 false（加载仍在途，等 onModelItemReady 补）。
+    bool rekey(const QString &oldPath, const QString &newPath,
+               const std::shared_ptr<Image> &authoritative = nullptr);
     const QString directoryPath() const;
     void unload(const QString &filePath);
     bool isLoaded(int index) const;
