@@ -64,6 +64,24 @@ std::shared_ptr<Image> Cache::take(const QString &path) {
     return img;
 }
 
+bool Cache::rekey(const QString &oldPath, const QString &newPath) {
+    if(oldPath == newPath)
+        return true;
+
+    std::unique_lock lock(mRWLock);
+    auto it = items.find(oldPath);
+    // newPath 已被占用时放弃：宁可让调用方重新加载，也不产生两个键指向同一张图
+    if(it == items.end() || items.contains(newPath))
+        return false;
+
+    // 链表节点就地改键（迭代器在 erase/insert 之间保持有效），LRU 位置不变
+    ListIt node = it.value();
+    items.erase(it);
+    node->key = newPath;
+    items.insert(newPath, node);
+    return true;
+}
+
 bool Cache::insert(const std::shared_ptr<Image> &img) {
     if (!img) return false;
 

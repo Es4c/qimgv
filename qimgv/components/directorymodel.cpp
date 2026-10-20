@@ -211,6 +211,10 @@ void DirectoryModel::unload(const QString &filePath) {
     cache.remove(filePath);
 }
 
+bool DirectoryModel::rekey(const QString &oldPath, const QString &newPath) {
+    return cache.rekey(oldPath, newPath);
+}
+
 bool DirectoryModel::loaderBusy() const {
     return loader.isBusy();
 }

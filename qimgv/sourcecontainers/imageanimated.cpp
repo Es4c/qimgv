@@ -107,7 +107,7 @@ enum class PrefixOpenStatus {
 struct PrefixOpenResult {
     std::unique_ptr<QImageReader> reader;
     PrefixOpenStatus status = PrefixOpenStatus::Ready;
-    int decoded = 0;   // EndOfFile 时实际成功读出的帧数
+    int decoded = 0;   // 从文件头成功读出的帧数（EndOfFile 时小于请求的前缀长度）
 };
 
 // 在调用线程内新建 reader，并顺序解码丢弃前 frameIndex 帧。
@@ -268,20 +268,12 @@ public:
                 }
 
                 if (target < 0) {
-                    // 停止/析构：任务确实退出时回收不再参加播放的窗口。
-                    // 若 stopDecoding() 之后又 startDecoding()，这里会看到
-                    // shutdown=false 并原地复活，不会误清正在复用的窗口。
+                    // 状态机只会在 shutdown 时以 target < 0 退出（暂停走 wait 分支）。
+                    // 本段全程持锁：startDecoding() 不可能在"看到 shutdown"与"回收
+                    // 窗口"之间插入，因此不会误清正在复用的窗口。
                     if (ctx.shutdown.load(std::memory_order_acquire))
                         resetWindowLocked(ctx, doomed);
-                    // 先让出 running，再复查 wantMore/shutdown。
-                    // startDecoding() 与本段共用 mutex，要么看到 running=false 自己启动，
-                    // 要么这里看到 wantMore=true 原地续跑，不会丢失唤醒
                     ctx.running.store(false, std::memory_order_release);
-                    if (ctx.wantMore.load(std::memory_order_acquire)
-                        && !ctx.shutdown.load(std::memory_order_acquire)) {
-                        ctx.running.store(true, std::memory_order_release);
-                        continue;
-                    }
                     break;
                 }
 
@@ -309,7 +301,12 @@ public:
 
                 if (opened.status == PrefixOpenStatus::EndOfFile) {
                     // 重新打开后文件比 ctx.nextIndex 记录的更短：这是真实 EOF，
-                    // 按实际读出的前缀帧数修正（取消不会走到这里）
+                    // 按实际读出的前缀帧数修正（取消不会走到这里）。
+                    // 前缀总是从文件头重新打开，因此 opened.decoded <= nextIndex。
+                    // opened.decoded == 0 表示此刻连第 0 帧都读不出来（文件被删除/
+                    // 截断/独占），而不是"动画只有 0 帧"：保留已解出的窗口并按已知
+                    // 帧数收尾，否则会把可显示的动画整个丢弃，frameCount() 还会退回
+                    // "帧数未知"而失去 jumpToFrame 的越界保护。
                     QMutexLocker locker(&ctx.mutex);
                     if (ctx.shutdown.load(std::memory_order_acquire)) {
                         resetWindowLocked(ctx, doomed);
@@ -317,7 +314,8 @@ public:
                         break;
                     }
                     ctx.exhausted = true;
-                    const int decoded = qMin(ctx.nextIndex, opened.decoded);
+                    const int decoded =
+                        opened.decoded > 0 ? opened.decoded : ctx.nextIndex;
                     trimWindowEndLocked(ctx, decoded, doomed);
                     ctx.nextIndex = decoded;
                     const int reported =

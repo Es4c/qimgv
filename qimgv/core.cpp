@@ -1,4 +1,5 @@
 #include "core.h"
+#include "utils/pathutils.h"
 #include <QSettings>
 #include <QMimeData>
 #include <QCryptographicHash>
@@ -13,6 +14,8 @@ namespace {
 // 目录扫描完成后，模型里保存的是枚举得到的实际路径；用户传入的路径在 Windows 上
 // 可能只有大小写不同。indexOfFile() 是精确哈希查找，这里在精确查找失败时按平台
 // 规则回退一次，返回模型内实际路径，保证后续 nextOf/prevOf/indexOfFile 可用。
+// 只在平台差异真实存在时才走线性回退；模型内路径本身已是 cleanPath 的绝对路径，
+// 因此逐项比较不再重复清理（零分配）。
 int findModelFileIndex(const DirectoryModel &model, const QString &path,
                        QString *actualPath)
 {
@@ -27,27 +30,15 @@ int findModelFileIndex(const DirectoryModel &model, const QString &path,
     const QString target = QDir::cleanPath(path);
     const int count = model.fileCount();
     for (int i = 0; i < count; ++i) {
-        if (QDir::cleanPath(model.filePathAt(i)).compare(target, Qt::CaseInsensitive) == 0) {
+        const QString &candidate = model.filePathAt(i);
+        if (candidate.compare(target, Qt::CaseInsensitive) == 0) {
             if (actualPath)
-                *actualPath = model.filePathAt(i);
+                *actualPath = candidate;
             return i;
         }
     }
 #endif
     return -1;
-}
-
-// 重新锚定后 state.currentFilePath 用的是目录枚举路径；仍在途的异步加载/
-// 缩放结果携带的是用户传入路径（Windows 上可能只有大小写不同）。这些回调
-// 必须按平台规则比较，否则重新锚定反而会让当前图永远装不上。
-bool sameFile(const QString &a, const QString &b)
-{
-#if defined(Q_OS_WIN)
-    // 同时容忍分隔符差异（QFileInfo 与目录枚举在 Windows 上都可能给出 / 或 \）
-    return QDir::cleanPath(a).compare(QDir::cleanPath(b), Qt::CaseInsensitive) == 0;
-#else
-    return a == b;
-#endif
 }
 } // namespace
 
@@ -361,24 +352,32 @@ void Core::onModelLoaded() {
     // 扫描完成会以目录枚举得到的路径重建列表：用户传入路径可能只有大小写不同。
     // 重新锚定到模型中的实际路径（不重新加载/重装当前图，也不触碰视图状态），
     // 否则 indexOfFile/nextOf/prevOf 会因精确匹配失败而无法翻页。
-    // 注：图片缓存仍以最初加载路径为键，重锚定后依赖精确缓存键的操作可能回退为重新解码。
+    // 图片缓存同样按加载路径精确查找，必须同步改键，否则重新锚定后
+    // isLoaded()/cachedImage() 全部 miss：缩放不再请求、幻灯片计时不启动、
+    // 信息栏尺寸归零。
+    const QString previousPath = state.currentFilePath;
     QString actualPath;
-    const int currentIndex = state.currentFilePath.isEmpty()
+    const int currentIndex = previousPath.isEmpty()
         ? -1
-        : findModelFileIndex(*model, state.currentFilePath, &actualPath);
+        : findModelFileIndex(*model, previousPath, &actualPath);
 
-    if(currentIndex >= 0)
-        state.currentFilePath = actualPath;
+    if(currentIndex >= 0) {
+        if(actualPath != previousPath) {
+            // 在途加载时缓存里还没有条目，改键失败无妨：onModelItemReady 会补一次
+            model->rekey(previousPath, actualPath);
+            state.currentFilePath = actualPath;
+        }
+
+        // 首次打开时扫描尚未完成，loadFileIndex() 看到的邻图为空。
+        // 列表就绪后补一次预加载；loader 按路径去重，重扫/排序不会重复提交任务。
+        if(settings->usePreloader()) {
+            model->preload(model->nextOf(actualPath));
+            model->preload(model->prevOf(actualPath));
+        }
+    }
 
     if(shuffle)
         syncRandomizer();
-
-    // 首次打开时扫描尚未完成，loadFileIndex() 看到的邻图为空。
-    // 列表就绪后补一次预加载；loader 按路径去重，重扫/排序不会重复提交任务。
-    if(currentIndex >= 0 && settings->usePreloader()) {
-        model->preload(model->nextOf(actualPath));
-        model->preload(model->prevOf(actualPath));
-    }
 
     updateInfoString();
 }
@@ -1263,7 +1262,7 @@ void Core::scalingRequest(QSize size, ScalingFilter filter) {
 }
 
 void Core::onScalingFinished(const QPixmap& scaled, const ScalerRequest& req) {
-    if (state.hasActiveImage && sameFile(req.pathRef(), state.currentFilePath)) {
+    if (state.hasActiveImage && samePath(req.pathRef(), state.currentFilePath)) {
         mw->onScalingFinished(scaled); 
     }
 }
@@ -1544,7 +1543,7 @@ void Core::jumpToLast() {
 
 void Core::onLoadFailed(const QString &path) {
     mw->showMessage(tr("Load failed: ") + path);
-    if(sameFile(path, state.currentFilePath)) {
+    if(samePath(path, state.currentFilePath)) {
         mw->closeImage();
         // ⭐ 首图加载失败也要显示窗口：main.cpp 只在 firstImageReady 里 showGui
         if(!state.hasActiveImage)
@@ -1557,7 +1556,12 @@ void Core::onLoadFailed(const QString &path) {
 }
 
 void Core::onModelItemReady(const std::shared_ptr<Image>& img, const QString &path) {
-    if(sameFile(path, state.currentFilePath)) {
+    if(samePath(path, state.currentFilePath)) {
+        // 重新锚定后仍在途的加载会带着用户路径到达（大小写可能不同）：
+        // 缓存 entry 已按该路径插入，这里把键改到当前路径，保证后续
+        // cachedImage()/isLoaded() 精确查找命中
+        if(path != state.currentFilePath)
+            model->rekey(path, state.currentFilePath);
         state.currentImg = img;
         guiSetImage(img);
         emit firstImageReady();
@@ -1570,7 +1574,7 @@ void Core::onModelItemReady(const std::shared_ptr<Image>& img, const QString &pa
 }
 
 void Core::onModelItemUpdated(const QString& filePath) {
-    if(sameFile(filePath, state.currentFilePath)) {
+    if(samePath(filePath, state.currentFilePath)) {
         guiSetImage(model->getImage(filePath));
         updateInfoString();
     }

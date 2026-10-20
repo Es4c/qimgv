@@ -306,7 +306,9 @@ void ImageViewerV2::startAnimation()
 {
     // 显式起播（含用户按播放键）：不再等待首帧就绪，清掉延迟标志
     mStartAnimationOnFrameReady = false;
-    if (movie && movie->frameCount() > 1) {
+    // frameCount() == 0 表示帧数未知（imageCount() 扫描失败的可读动画），
+    // 只有确知"仅一帧"时才不该起播；旧条件 > 1 会把未知帧数的动画永久判死
+    if (movie && movie->frameCount() != 1) {
         stopAnimation();
         // ⭐ 暂停/切走后预解码会停手，恢复播放时继续在后台顺序解码
         movie->startDecoding();
@@ -345,11 +347,19 @@ void ImageViewerV2::onAnimationTimer()
     int next = 0;
 
     if (count > 0) {
+        // 帧数可能刚从"未知"被 EOF 修正：只剩一帧就没有可推进的目标（循环播放
+        // 会原地重绘同一帧），停表即可。幻灯片由 Core 的单帧计时器负责推进。
+        if (count == 1) {
+            stopAnimation();
+            return;
+        }
         const int last = count - 1;
         next = (movie->currentFrameNumber() >= last) ? 0 : movie->currentFrameNumber() + 1;
 
         if (next == 0 && !loopPlayback) {
-            emit animationPaused(true);
+            // 播放到末尾：交给 stopAnimation() 统一收尾（停表 + animationPaused(true)
+            // + 让预解码停手），与下面几个失败分支保持一致
+            stopAnimation();
             emit playbackFinished();
             return;
         }
@@ -451,8 +461,14 @@ QPixmap ImageViewerV2::scaledFrameFor(int frameNumber, const QImage &frame, cons
     const qsizetype maxFrames = qMax<qsizetype>(1, kCacheBudgetBytes / frameBytes);
 
     // 有界 LRU：达到上限后只淘汰最旧的一条，不再整表清空
-    while (mScaledFrameCache.size() >= maxFrames && !mScaledFrameOrder.isEmpty())
+    while (mScaledFrameCache.size() >= maxFrames) {
+        if (mScaledFrameOrder.isEmpty()) {
+            // 顺序表意外失配时整体失效兜底，避免缓存退化成无界
+            clearScaledFrameCache();
+            break;
+        }
         mScaledFrameCache.remove(mScaledFrameOrder.takeFirst());
+    }
 
     QPixmap scaled = QPixmap::fromImage(frame.scaled(target, Qt::KeepAspectRatio,
                                                       Qt::FastTransformation));

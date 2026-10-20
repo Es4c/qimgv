@@ -45,6 +45,9 @@ public:
     void updateImage(const QString &filePath, const std::shared_ptr<Image> &img);
     void setSortingMode(SortingMode mode);
     SortingMode sortingMode() const;
+    // 目录扫描完成后把图片缓存的键从用户传入路径改为枚举路径（Core::onModelLoaded），
+    // 否则按当前路径做的 isLoaded()/cachedImage() 精确查找会全部 miss
+    bool rekey(const QString &oldPath, const QString &newPath);
     const QString directoryPath() const;
     void unload(const QString &filePath);
     bool isLoaded(int index) const;

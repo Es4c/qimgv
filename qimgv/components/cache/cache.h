@@ -19,6 +19,10 @@ public:
     std::shared_ptr<Image> get(const QString &path);
     // 单锁取出并删除，用于 modify 路径合并 3 次加锁为 1 次
     std::shared_ptr<Image> take(const QString &path);
+    // 条目改键（O(1)，只动哈希与链表节点，不触碰像素数据）。用于目录扫描完成后
+    // 把缓存键从用户传入路径改为枚举路径；oldPath 不存在或 newPath 已被占用时
+    // 返回 false 且不做任何改动
+    bool rekey(const QString &oldPath, const QString &newPath);
     bool insert(const std::shared_ptr<Image> &img);
 
     void remove(const QString &path);
