@@ -46,7 +46,9 @@ public:
     void setSortingMode(SortingMode mode);
     SortingMode sortingMode() const;
     // 目录扫描完成后把图片缓存的键从用户传入路径改为枚举路径（Core::onModelLoaded），
-    // 否则按当前路径做的 isLoaded()/cachedImage() 精确查找会全部 miss
+    // 否则按当前路径做的 isLoaded()/cachedImage() 精确查找会全部 miss。
+    // 新键已被同一对象占用时合并旧键（同一文件两种拼写不会留下两份条目）；
+    // 返回 false 表示条目尚不存在或新键被另一对象占用，调用方按需取舍
     bool rekey(const QString &oldPath, const QString &newPath);
     const QString directoryPath() const;
     void unload(const QString &filePath);

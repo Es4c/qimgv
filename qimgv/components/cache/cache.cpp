@@ -67,12 +67,25 @@ std::shared_ptr<Image> Cache::take(const QString &path) {
 bool Cache::rekey(const QString &oldPath, const QString &newPath) {
     if(oldPath == newPath)
         return true;
+    if(newPath.isEmpty())
+        return false;
 
     std::unique_lock lock(mRWLock);
     auto it = items.find(oldPath);
-    // newPath 已被占用时放弃：宁可让调用方重新加载，也不产生两个键指向同一张图
-    if(it == items.end() || items.contains(newPath))
+    if(it == items.end())
         return false;
+
+    auto existing = items.find(newPath);
+    if(existing != items.end()) {
+        // 新键已被占用：只有"同一对象"才能安全合并（同一文件被两种拼写加载过），
+        // 否则两个不同对象会互相覆盖，保留原状交给调用方取舍
+        if(existing.value()->item != it.value()->item)
+            return false;
+        mCurrentBytes -= it.value()->bytes;
+        lruList.erase(it.value());
+        items.erase(it);
+        return true;
+    }
 
     // 链表节点就地改键（迭代器在 erase/insert 之间保持有效），LRU 位置不变
     ListIt node = it.value();
@@ -82,17 +95,16 @@ bool Cache::rekey(const QString &oldPath, const QString &newPath) {
     return true;
 }
 
-bool Cache::insert(const std::shared_ptr<Image> &img) {
-    if (!img) return false;
+bool Cache::insert(const QString &key, const std::shared_ptr<Image> &img) {
+    if (!img || key.isEmpty()) return false;
 
     // ⭐ 字节估算（getImage() 返回已解码指针 + sizeInBytes，无解码/无 I/O）移到写锁之外，
     // 缩短临界区：估算不再占用锁，锁内只做 map/链表更新
-    const QString &path = img->filePath();
     const size_t bytes = estimateBytes(img);
 
     std::unique_lock lock(mRWLock);
 
-    auto it = items.find(path);
+    auto it = items.find(key);
     if (it != items.end()) {
         // 原地更新，保持原有返回语义（false = 已存在，非新增）
         mCurrentBytes -= it.value()->bytes;
@@ -105,8 +117,8 @@ bool Cache::insert(const std::shared_ptr<Image> &img) {
         return false;
     }
 
-    lruList.push_front({path, img, bytes});
-    items.insert(path, lruList.begin());
+    lruList.push_front({key, img, bytes});
+    items.insert(key, lruList.begin());
     mCurrentBytes += bytes;
 
     if (mCurrentBytes > mMaxBytes || items.size() > mMaxCacheSize) {

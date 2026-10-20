@@ -1,8 +1,8 @@
 // windowsworker.cpp
 #include "windowsworker.h"
 #include "windowswatcher_p.h"
+#include "utils/pathutils.h"
 #include <cstddef>
-#include <QDir>
 #include <QSet>
 #include <QThread>
 
@@ -13,13 +13,8 @@ constexpr qsizetype kNetworkBufferSize = 65536;             // 64KB，网络目�
 constexpr qsizetype kMaxFileNameLength = 4096;              // 单条文件名上限（WCHAR）
 constexpr int kShrinkQuietReads = 4;                        // 连续多少次低利用率读取后回收缓冲
 
-// Windows 路径大小写不敏感，且允许尾部分隔符差异
-bool sameWatchPath(const QString &a, const QString &b) {
-    if (a.isEmpty() || b.isEmpty())
-        return a.isEmpty() && b.isEmpty();
-    return QDir::cleanPath(a).compare(
-               QDir::cleanPath(b), Qt::CaseInsensitive) == 0;
-}
+// 路径判定统一用 utils/pathutils.h 的 samePath()：worker 与 GUI 侧（DirectoryManager）
+// 必须用同一套规则，否则就绪握手两边各判各的会直接漂移。
 }
 
 WindowsWorker::WindowsWorker() {
@@ -54,7 +49,7 @@ void WindowsWorker::requestDirectoryHandle(const QString& path) {
         // 即使当前查询为 ready，也预约下一次 arm 的就绪信号：
         // 请求返回后、扫描检查前旧读若刚好完成，下一次 arm 仍能唤醒扫描。
         announceReady = true;
-        if (sameWatchPath(path, pendingPath)) {
+        if (samePath(path, pendingPath)) {
             const HANDLE active =
                 activeHandle.load(std::memory_order_acquire);
             const bool pendingRead = readPending.load(std::memory_order_acquire);
@@ -64,7 +59,7 @@ void WindowsWorker::requestDirectoryHandle(const QString& path) {
             if (active != INVALID_HANDLE_VALUE
                 && pendingRead
                 && !readyPath.isEmpty()
-                && sameWatchPath(readyPath, path)) {
+                && samePath(readyPath, path)) {
                 return;
             }
             if (active != INVALID_HANDLE_VALUE && !pendingRead) {
@@ -96,7 +91,7 @@ bool WindowsWorker::isWatchPathReady(const QString& path) const {
     // 读取完成到下一次 arm 之间没有挂起读，此时不能报告就绪。
     if (!readPending.load(std::memory_order_acquire) || readyPath.isEmpty())
         return false;
-    return sameWatchPath(readyPath, path);
+    return samePath(readyPath, path);
 }
 
 void WindowsWorker::setReadyPath(const QString& path) {
@@ -377,7 +372,7 @@ void WindowsWorker::run() {
             // 只有「当前读仍挂着且仍处于就绪状态」时，同路径请求才算已满足。
             // isWatchPathReady() 已同时检查 readPending，不能凭句柄有效直接恢复，
             // 否则扫描可能落在“旧读已完成、下一次读尚未挂上”的缝里。
-            if(sameWatchPath(pending, currentPath) && isWatchPathReady(currentPath))
+            if(samePath(pending, currentPath) && isWatchPathReady(currentPath))
                 continue;
 
             cancelPendingRead();

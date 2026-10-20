@@ -347,10 +347,15 @@ void ImageViewerV2::onAnimationTimer()
     int next = 0;
 
     if (count > 0) {
-        // 帧数可能刚从"未知"被 EOF 修正：只剩一帧就没有可推进的目标（循环播放
-        // 会原地重绘同一帧），停表即可。幻灯片由 Core 的单帧计时器负责推进。
+        // 帧数可能刚从"未知"（0）或虚高的扫描值被 EOF 修正：只剩一帧就没有可推进
+        // 的目标（循环播放会原地重绘同一帧），停表即可。
+        // 非循环（幻灯片）必须补发 playbackFinished，与下面的收尾分支一致：这时
+        // Core 的固定停留计时器并没有挂（加载时帧数未知或 >1），不补发就再没有
+        // 事件能推进幻灯片了。
         if (count == 1) {
             stopAnimation();
+            if (!loopPlayback)
+                emit playbackFinished();
             return;
         }
         const int last = count - 1;

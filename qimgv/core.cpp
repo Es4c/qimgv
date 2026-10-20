@@ -363,7 +363,10 @@ void Core::onModelLoaded() {
 
     if(currentIndex >= 0) {
         if(actualPath != previousPath) {
-            // 在途加载时缓存里还没有条目，改键失败无妨：onModelItemReady 会补一次
+            // 改键失败只有两种可能，都不需要回滚锚定：
+            //  1) 条目尚不存在（加载仍在途）—— onModelItemReady 会补一次改键；
+            //  2) 新键已被同一文件的另一份条目占用（rekey 只在对象不同时才会拒绝），
+            //     此时按新路径精确查找同样能命中，旧别名随 LRU 淘汰回收。
             model->rekey(previousPath, actualPath);
             state.currentFilePath = actualPath;
         }
@@ -1520,7 +1523,17 @@ void Core::startSlideshowTimer() {
         slideshowTimer.start();
     } else if(img->type() == ANIMATED) {
         auto anim = dynamic_cast<ImageAnimated *>(img.get());
-        if(anim && anim->frameCount() <= 1)
+        if(!anim)
+            return;
+        // ⭐ 只对"确知单帧"或"首帧都没解出来"的情况起固定停留计时。
+        // frameCount() == 0 是帧数未知（imageCount() 扫描失败的动画），
+        // startAnimation() 会正常播放它：再挂一个固定计时器会在动画没播完时把图
+        // 切走（两个时钟互相抢，长动画被截断）。未知帧数与已知多帧动画统一由
+        // playbackFinished 推进；未知帧数之后被 EOF 修正为 1 时，onAnimationTimer()
+        // 的 count == 1 分支也会补发 playbackFinished，幻灯片不会停住。
+        // !isValid()：没有一个可显示的帧，视图会拒绝播放（不会有 playbackFinished），
+        // 只能靠计时器越过这张坏图。
+        if(anim->frameCount() == 1 || !anim->isValid())
             slideshowTimer.start();
     }
 }
@@ -1558,8 +1571,9 @@ void Core::onLoadFailed(const QString &path) {
 void Core::onModelItemReady(const std::shared_ptr<Image>& img, const QString &path) {
     if(samePath(path, state.currentFilePath)) {
         // 重新锚定后仍在途的加载会带着用户路径到达（大小写可能不同）：
-        // 缓存 entry 已按该路径插入，这里把键改到当前路径，保证后续
-        // cachedImage()/isLoaded() 精确查找命中
+        // 缓存 entry 的键就是这条加载路径（Cache::insert 由目录模型显式给键），
+        // 这里把键改到当前路径，保证后续 cachedImage()/isLoaded() 精确查找命中。
+        // 返回 false 只可能是新键已有等价条目，无需补救。
         if(path != state.currentFilePath)
             model->rekey(path, state.currentFilePath);
         state.currentImg = img;

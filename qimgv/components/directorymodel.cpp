@@ -225,9 +225,10 @@ void DirectoryModel::onImageReady(const std::shared_ptr<Image> &img, const QStri
         return;
     }
 
-    // ✅ 直接insert即可，内部自动处理存在的情况（原地更新 + 移到MRU头）
-    // 消除一次冗余的锁获取和原子引用计数操作
-    cache.insert(img);
+    // ✅ 直接insert即可，内部自动处理存在的情况（原地更新 + 移到MRU头）。
+    // 键用加载路径而不是 img->filePath()：目录模型是缓存键的唯一来源
+    // （见 Cache::insert 注释），扫描完成后 rekey 到枚举路径才不会分叉
+    cache.insert(path, img);
     emit imageReady(img, path);
 }
 
@@ -325,8 +326,10 @@ void DirectoryModel::updateImage(const QString &filePath, const std::shared_ptr<
     if(!containsFile(filePath))
         return;
 
-    // insert 返回"是否新增"：已存在则原地更新（返回 false），免去一次 contains 加锁查找
-    if(cache.insert(img))
+    // insert 返回"是否新增"：已存在则原地更新（返回 false），免去一次 contains 加锁查找。
+    // ⭐ 键必须用调用方给出的 filePath：rekey 之后缓存键是枚举路径，而 img 内部
+    // 仍保存加载时的路径，按对象路径插入会把旧键重新建出来（同一张图两份条目）
+    if(cache.insert(filePath, img))
         emit imageReady(img, filePath);
     else
         emit imageUpdated(filePath);
@@ -348,7 +351,7 @@ void DirectoryModel::load(const QString &filePath, bool asyncHint) {
 
     auto img = loader.load(filePath);
     if(img) {
-        cache.insert(img);
+        cache.insert(filePath, img);
         emit imageReady(img, filePath);
     } else {
         emit loadFailed(filePath);
