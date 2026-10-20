@@ -750,8 +750,11 @@ void Core::onFileRenamed(const QString& fromPath, int /*indexFrom*/, const QStri
 void Core::onFileAdded(const QString& filePath) {
     Q_UNUSED(filePath)
     updateInfoString();
-    // ⭐ 与首图/幻灯片一致：异步解码，避免在 GUI 线程同步读盘
-    if(model->fileCount() == 1 && state.currentFilePath.isEmpty())
+    // ⭐ 与首图/幻灯片一致：异步解码，避免在 GUI 线程同步读盘。
+    // pendingOpen 期间由 openPendingImage() 统一决定打开首图还是末图：
+    // 扫描结束时会先重放缓冲的 watcher 事件，这里不能抢先打开第一张。
+    if(state.pendingOpen == PendingOpen::None
+       && model->fileCount() == 1 && state.currentFilePath.isEmpty())
         loadFileIndex(0, true, settings->usePreloader());
 }
 

@@ -11,7 +11,10 @@ Scaler::Scaler(QObject *parent)
 
 Scaler::~Scaler() {
     // 先作废所有在算的任务（它们在阶段边界自检代数），并丢弃排队请求：
-    // 退出时既不等一整次大图缩放，也不会在析构过程中再启动新任务
+    // 队列中的过期请求不会启动；已在 cv::resize() 内的任务无法中断，
+    // waitForDone() 最多等正在执行的一到两次缩放返回
+    //（之后的自检会跳过格式转换/QPixmap 构造）。
+    // 必须等待：runnable 持有 mGeneration 指针且 finished 直连到本对象。
     mGeneration.fetch_add(1, std::memory_order_relaxed);
     {
         QMutexLocker locker(&mutex);

@@ -22,10 +22,12 @@ public Q_SLOTS:
     void requestWatchPath(const QString& path);
 
 Q_SIGNALS:
-    void fileCreated(const QString& filePath);
-    void fileDeleted(const QString& filePath);
-    void fileRenamed(const QString& oldPath, const QString& newPath);
-    void fileModified(const QString& filePath);
+    // ⭐ 事件必须携带产生它的目录：平滑切换监视路径时，旧目录的排队事件
+    // 可能在新路径生效后才派发，仅凭文件名会被错误地归到新目录。
+    void fileCreated(const QString& directoryPath, const QString& fileName);
+    void fileDeleted(const QString& directoryPath, const QString& fileName);
+    void fileRenamed(const QString& directoryPath, const QString& oldName, const QString& newName);
+    void fileModified(const QString& directoryPath, const QString& fileName);
     void observingStarted();
     void observingStopped();
 

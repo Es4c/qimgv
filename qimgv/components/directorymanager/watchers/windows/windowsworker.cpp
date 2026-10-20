@@ -155,7 +155,7 @@ WindowsWorker::WaitResult WindowsWorker::waitOnce(DWORD &bytesReturned) {
     return WaitResult::Ok;
 }
 
-QVector<NotifyEvent> WindowsWorker::parseBatch(DWORD bytesReturned) {
+QVector<NotifyEvent> WindowsWorker::parseBatch(DWORD bytesReturned, const QString &directoryPath) {
     auto notify = reinterpret_cast<PFILE_NOTIFY_INFORMATION>(buffer.data());
     QVector<NotifyEvent> batch;
     batch.reserve(bytesReturned / 32 + 16);
@@ -165,7 +165,7 @@ QVector<NotifyEvent> WindowsWorker::parseBatch(DWORD bytesReturned) {
             const QString fileName(QString::fromUtf16(
                 reinterpret_cast<const char16_t*>(notify->FileName),
                 static_cast<qsizetype>(len)));
-            batch.append(NotifyEvent{fileName, notify->Action});
+            batch.append(NotifyEvent{directoryPath, fileName, notify->Action});
         }
         if(notify->NextEntryOffset == 0)
             break;
@@ -254,7 +254,7 @@ void WindowsWorker::run() {
             continue;
         }
 
-        QVector<NotifyEvent> batch = parseBatch(bytesReturned);
+        QVector<NotifyEvent> batch = parseBatch(bytesReturned, currentPath);
         dedupModified(batch);
         emitAndMaybeShrink(batch, bytesReturned, quietReads);
     }

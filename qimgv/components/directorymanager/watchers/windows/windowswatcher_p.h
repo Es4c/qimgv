@@ -4,6 +4,7 @@
 #include "windowswatcher.h"
 #include "../directorywatcher_p.h"
 #include "windowsworker.h"
+#include <QPair>
 #include <QQueue>
 #include <QString>
 #include <windows.h>
@@ -21,8 +22,9 @@ public slots:
     void dispatchNotify(const QVector<NotifyEvent>& events);
 
 private:
-    // ⭐ 使用队列保证 rename 配对正确（关键修复）
-    QQueue<QString> renameOldQueue;
+    // ⭐ 使用队列保证 rename 配对正确（关键修复）；同时记录目录，
+    // 防止切换监视路径时旧目录的 OLD 与 新目录的 NEW 被错误配对
+    QQueue<QPair<QString, QString>> renameOldQueue;   // (directoryPath, fileName)
 };
 
 #endif // WINDOWSWATCHER_P_H

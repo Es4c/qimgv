@@ -198,7 +198,8 @@ private:
     FileListSource mListSource = SOURCE_DIRECTORY;
     // ⭐ 目录枚举在 worker 上跑：GUI 线程只接收已排好序的结果并建索引。
     // mScanGeneration 用来取消过期扫描（切目录/新请求时递增），
-    // mScanInProgress 期间挂起的 watcher 事件一律丢弃（扫描结果才是权威快照）
+    // mScanInProgress 期间到达的 watcher 事件先缓冲，扫描结果应用后重放，
+    // 避免扫描耗时期间的文件变化被永久丢弃
     // 代数先于线程池声明：析构顺序相反，保证池内残留任务读取代数时它仍然有效
     std::atomic<quint64> mScanGeneration{0};
     QThreadPool mScanPool;
@@ -224,6 +225,9 @@ private:
     QVector<PendingEvent> mPendingEvents;
 
     void readSettings();
+    // watcher 事件入口：只接受当前监视目录的事件；扫描期间先入队，结束后重放
+    bool acceptsWatcherEvent(const QString &directoryPath) const;
+    void queueWatcherEvent(PendingEvent ev);
     void loadEntryListAsync(const QString &directoryPath, bool recursive);
     void applyScanResult(std::vector<FSEntry> files, std::vector<FSEntry> dirs,
                          quint64 generation, const QString &path,
@@ -255,10 +259,11 @@ private:
     }
 
 private slots:
-    void onFileAddedExternal(const QString &fileName);
-    void onFileRemovedExternal(const QString &fileName);
-    void onFileModifiedExternal(const QString &fileName);
-    void onFileRenamedExternal(const QString &oldFileName, const QString &newFileName);
+    void onFileAddedExternal(const QString &directoryPath, const QString &fileName);
+    void onFileRemovedExternal(const QString &directoryPath, const QString &fileName);
+    void onFileModifiedExternal(const QString &directoryPath, const QString &fileName);
+    void onFileRenamedExternal(const QString &directoryPath, const QString &oldFileName,
+                               const QString &newFileName);
 
 signals:
     void loaded(const QString &path);

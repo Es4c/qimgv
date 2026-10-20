@@ -1,4 +1,5 @@
 #include "directorymanager.h"
+#include <QDir>
 #include <QHash>
 #include <QRunnable>
 #include <cstddef>
@@ -69,6 +70,18 @@ DirectoryManager::~DirectoryManager() {
 }
 
 namespace {
+// watcher 事件可能来自刚切走的旧目录（平滑切换时仍在队列中）：
+// 只有与当前监视目录一致的事件才允许进入列表。
+bool sameWatchDirectory(const QString &lhs, const QString &rhs) {
+    const QString a = QDir::cleanPath(lhs);
+    const QString b = QDir::cleanPath(rhs);
+#if defined(Q_OS_WIN)
+    return a.compare(b, Qt::CaseInsensitive) == 0;
+#else
+    return a == b;
+#endif
+}
+
 // 目录枚举结果（worker 产出，GUI 线程接收）
 struct ScannedEntries {
     std::vector<FSEntry> files;
@@ -273,7 +286,7 @@ void DirectoryManager::startFileWatcher(const QString &directoryPath) {
     const bool isFirstTime = !watcher;
     if(isFirstTime)
         watcher = DirectoryWatcher::newInstance();
-    // ⭐ stopFileWatcher() 会断开连接（关闭目录/退出时停止监视）：
+    // ⭐ stopFileWatcher() 会断开连接（析构时停止监视）：
     // 重新打开目录时必须无条件恢复连接，否则此后自动刷新永久失效；
     // Qt::UniqueConnection 保证重复连接不会叠加
     connect(watcher, &DirectoryWatcher::fileCreated, this, &DirectoryManager::onFileAddedExternal, Qt::UniqueConnection);
@@ -385,7 +398,7 @@ bool DirectoryManager::setDirectory(const QString &dirPath) {
         clearEntryList();
         // ⭐ 不停止 watcher：Core::reset() 之后会紧接着打开新目录，
         // 保持线程存活即可走 startFileWatcher() 的平滑路径切换；
-        // 这期间到达的事件由 mScanInProgress / clearEntryList() 丢弃
+        // 这期间到达的旧目录事件由 acceptsWatcherEvent() 按目录过滤丢弃
         return false;
     }
     // ⭐ QFileInfo 单次 stat 同时完成存在性、类型与可读性判断
@@ -543,8 +556,15 @@ void DirectoryManager::clearEntryList() {
 // GUI 线程只做「接收结果 + 建立两个索引映射」。
 void DirectoryManager::loadEntryListAsync(const QString &directoryPath, bool recursive) {
     clearEntryList();
-    // 期间到达的 watcher 事件一律丢弃：扫描结果就是新列表的权威快照
     mScanInProgress = true;
+
+    // ⭐ watcher 必须在扫描开始前就切到目标目录：扫描可能持续数秒，
+    // 期间的变化先进入 mPendingEvents，等 applyScanResult() 完成后再重放。
+    // 否则扫描完成后列表会永久缺少这些变化，直到下一次无关事件碰巧刷新。
+    // 递归模式不启动/停止 watcher（事件由 acceptsWatcherEvent 按 SOURCE_DIRECTORY 过滤），
+    // 避免 stop/observe 与线程退出竞争，导致下一次普通目录切换时 watcher 实际未运行。
+    if(mListSource == SOURCE_DIRECTORY)
+        startFileWatcher(directoryPath);
 
     const quint64 generation = mScanGeneration.fetch_add(1, std::memory_order_relaxed) + 1;
     // 值快照：worker 不读 Settings，也不碰其余成员
@@ -580,34 +600,32 @@ void DirectoryManager::applyScanResult(std::vector<FSEntry> files, std::vector<F
     if(generation != mScanGeneration.load(std::memory_order_relaxed) || path != mDirectoryPath)
         return;
 
+    // 扫描期间排序设置可能被改过（列表为空时 setSortingMode 不会重排），
+    // 此时 worker 的结果顺序已作废：直接按当前设置重扫（仍在线程池），
+    // 不在 GUI 线程对 10 万条 FSEntry 做整表排序
+    if(scannedSortMode != mSortingMode || scannedSortFolders != settings->sortFolders()) {
+        loadEntryListAsync(path, mListSource == SOURCE_DIRECTORY_RECURSIVE);
+        return;
+    }
+
     mScanInProgress = false;
     fileEntryVec = std::move(files);
     dirEntryVec = std::move(dirs);
 
-    // 扫描期间排序设置可能被改过（列表为空时 setSortingMode 不会重排），
-    // 此时 worker 用的还是旧设置：在 GUI 线程按新设置重排一次，保证顺序正确
-    if(scannedSortMode != mSortingMode || scannedSortFolders != settings->sortFolders()) {
-        mFilesSorted = false;
-        mDirsSorted = false;
-        mLastCompareFunction = nullptr;
-        sortEntryLists();
-    } else {
-        rebuildFileIndexMap();
-        rebuildDirIndexMap();
+    rebuildFileIndexMap();
+    rebuildDirIndexMap();
 
-        // worker 已完成排序：同步排序状态，避免随后的增量插入/重排再做整表排序
-        mFilesSorted = true;
-        mDirsSorted = true;
-        mLastCompareFunction = compareFunction();
-    }
+    // worker 已完成排序：同步排序状态，避免随后的增量插入/重排再做整表排序
+    mFilesSorted = true;
+    mDirsSorted = true;
+    mLastCompareFunction = compareFunction();
+
+    // ⭐ 重放扫描期间缓冲的 watcher 事件。事件处理本身会 stat 校验磁盘状态，
+    // 因此「扫描已包含的变化」会自然收敛为幂等操作。
+    // 必须在 loaded 之前完成：否则 Core 可能先按过期列表打开首图/末图。
+    flushPendingEvents();
 
     emit loaded(path);
-
-    // 扫描完成后才挂 watcher：扫描期间发生的变更由扫描结果本身覆盖
-    if(mListSource == SOURCE_DIRECTORY)
-        startFileWatcher(path);
-    else
-        stopFileWatcher();
 }
 
 void DirectoryManager::addDirEntriesOnly(std::vector<FSEntry> &entryVec, const QString &directoryPath) {
@@ -749,12 +767,15 @@ bool DirectoryManager::renameFileEntryBatch(const QString &oldPath, const QStrin
         const int idx = indexOfFile(oldPath);
         extraRemoves.append(QPair<QString,int>(oldPath, idx));
         fileEntryVec.erase(fileEntryVec.begin() + idx);
+        // 内核自行维护索引不变量：任何 erase 都必须同步映射（调用方无需兜底 rebuild）
+        updateFileIndexAfterRemove(oldPath, idx);
         return false;
     }
     if(!hasSupportedSuffix(newEntryOpt->name, mSuffixMatcher)) {
         const int idx = indexOfFile(oldPath);
         extraRemoves.append(QPair<QString,int>(oldPath, idx));
         fileEntryVec.erase(fileEntryVec.begin() + idx);
+        updateFileIndexAfterRemove(oldPath, idx);
         return false;
     }
     int oldIndex = indexOfFile(oldPath);
@@ -842,8 +863,7 @@ void DirectoryManager::renameFileEntry(const FilePath& oldFilePath, const FileNa
     const bool ok = renameFileEntryBatch(oldFilePath.value, newFileName.value,
                                          emitInfo, extraRemoves, extraAdds, extraRefresh);
     if(!ok) {
-        // fallback：旧条目不在列表中
-        rebuildFileIndexMap();
+        // fallback：内核已在所有 erase 分支同步维护索引，这里只处理额外新增/刷新
         for(const auto &p : extraRefresh)
             updateFileEntry(p);
         for(const auto &p : extraAdds)
@@ -900,50 +920,62 @@ QStringList DirectoryManager::fileList() const {
     return list;
 }
 
-void DirectoryManager::onFileRemovedExternal(const QString &fileName) {
-    // 目录已关闭（Core::reset 与下一次 setDirectory 之间的空窗）时丢弃旧目录事件
-    if(mIgnoreWatcherEvents || mScanInProgress || mDirectoryPath.isEmpty())
+bool DirectoryManager::acceptsWatcherEvent(const QString &directoryPath) const {
+    // 目录已关闭（Core::reset 与下一次 setDirectory 之间的空窗）、
+    // 已切到递归/目录列表模式，或事件来自刚切走的旧目录，一律丢弃
+    return !mIgnoreWatcherEvents
+           && mListSource == SOURCE_DIRECTORY
+           && !mDirectoryPath.isEmpty()
+           && sameWatchDirectory(directoryPath, mDirectoryPath);
+}
+
+void DirectoryManager::queueWatcherEvent(PendingEvent ev) {
+    mPendingEvents.append(std::move(ev));
+    // 扫描期间只入队，不启动定时器：列表尚在构建，applyScanResult() 会统一重放
+    if(!mScanInProgress)
+        mEventBatchTimer.start();
+}
+
+void DirectoryManager::onFileRemovedExternal(const QString &directoryPath, const QString &fileName) {
+    if(!acceptsWatcherEvent(directoryPath))
         return;
 
     PendingEvent ev;
     ev.type = PendingEvent::Type::Remove;
-    ev.path = QDir(watcher->watchPath()).filePath(fileName);
-    mPendingEvents.append(ev);
-    mEventBatchTimer.start();
+    ev.path = QDir(directoryPath).filePath(fileName);
+    queueWatcherEvent(std::move(ev));
 }
 
-void DirectoryManager::onFileAddedExternal(const QString &fileName) {
-    if(mIgnoreWatcherEvents || mScanInProgress || mDirectoryPath.isEmpty())
+void DirectoryManager::onFileAddedExternal(const QString &directoryPath, const QString &fileName) {
+    if(!acceptsWatcherEvent(directoryPath))
         return;
 
     PendingEvent ev;
     ev.type = PendingEvent::Type::Add;
-    ev.path = QDir(watcher->watchPath()).filePath(fileName);
-    mPendingEvents.append(ev);
-    mEventBatchTimer.start();
+    ev.path = QDir(directoryPath).filePath(fileName);
+    queueWatcherEvent(std::move(ev));
 }
 
-void DirectoryManager::onFileRenamedExternal(const QString &oldName, const QString &newName) {
-    if(mIgnoreWatcherEvents || mScanInProgress || mDirectoryPath.isEmpty())
+void DirectoryManager::onFileRenamedExternal(const QString &directoryPath,
+                                             const QString &oldName, const QString &newName) {
+    if(!acceptsWatcherEvent(directoryPath))
         return;
 
     PendingEvent ev;
     ev.type = PendingEvent::Type::Rename;
-    ev.path = QDir(watcher->watchPath()).filePath(oldName);
+    ev.path = QDir(directoryPath).filePath(oldName);
     ev.newName = newName;
-    mPendingEvents.append(ev);
-    mEventBatchTimer.start();
+    queueWatcherEvent(std::move(ev));
 }
 
-void DirectoryManager::onFileModifiedExternal(const QString &fileName) {
-    if(mIgnoreWatcherEvents || mScanInProgress || mDirectoryPath.isEmpty())
+void DirectoryManager::onFileModifiedExternal(const QString &directoryPath, const QString &fileName) {
+    if(!acceptsWatcherEvent(directoryPath))
         return;
 
     PendingEvent ev;
     ev.type = PendingEvent::Type::Modify;
-    ev.path = QDir(watcher->watchPath()).filePath(fileName);
-    mPendingEvents.append(ev);
-    mEventBatchTimer.start();
+    ev.path = QDir(directoryPath).filePath(fileName);
+    queueWatcherEvent(std::move(ev));
 }
 
 // ==================== 批量事件处理 ====================
@@ -958,6 +990,9 @@ void DirectoryManager::flushPendingEvents() {
         clearPendingEvents();
         return;
     }
+    // 扫描未完成时列表还是空的/旧的：事件留到 applyScanResult() 统一重放
+    if(mScanInProgress)
+        return;
 
     // 快照并立即清空，处理期间新到达的事件进入下一批
     QVector<PendingEvent> events = std::move(mPendingEvents);
@@ -1039,12 +1074,11 @@ void DirectoryManager::flushPendingEvents() {
 }
 
 void DirectoryManager::processPendingRenames(const QVector<QPair<QString, QString>> &renames) {
-    if(renames.isEmpty() || !watcher)
+    if(renames.isEmpty())
         return;
 
     // ⭐ 逐条即时更新（文件重命名还需 emit），保证索引与视图增量一致（链式 rename 依赖新鲜索引）；
     // 批量内核只刷新受影响区间，不再每条重命名都整表 rebuild
-    const QString base = watcher->watchPath();
     for(const auto &r : renames) {
         const QString &oldPath = r.first;
         const QString &newName = r.second;
@@ -1063,7 +1097,7 @@ void DirectoryManager::processPendingRenames(const QVector<QPair<QString, QStrin
                                     extraRemoves, extraAdds, extraRefresh)) {
                 emit fileRenamed(emitInfo.from, emitInfo.fromIndex, emitInfo.to, emitInfo.toIndex);
             } else {
-                rebuildFileIndexMap();
+                // 内核已维护索引不变量：只应用额外新增/刷新，不再整表 rebuild
                 for(const auto &er : extraRemoves)
                     emit fileRemoved(er.first, er.second);
                 for(const auto &p : extraRefresh)
@@ -1074,8 +1108,9 @@ void DirectoryManager::processPendingRenames(const QVector<QPair<QString, QStrin
             continue;
         }
 
-        // ⭐ fallback 单次 QFileInfo 复用，避免 isDir+isFile 两次 stat
-        const QString newPath = QDir(base).filePath(newName);
+        // ⭐ fallback 单次 QFileInfo 复用，避免 isDir+isFile 两次 stat。
+        // 新路径由事件自身的旧路径推导，不依赖 watcher 当前路径（扫描重放时更稳）
+        const QString newPath = QDir(QFileInfo(oldPath).absolutePath()).filePath(newName);
         const QFileInfo fi(newPath);
         if(!fi.exists())
             continue;

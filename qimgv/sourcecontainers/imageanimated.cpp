@@ -5,7 +5,6 @@
 #include <QMutexLocker>
 #include <QRunnable>
 #include <QThreadPool>
-#include <QVector>
 #include <QWaitCondition>
 #include <atomic>
 #include <cstddef>
@@ -20,12 +19,13 @@ struct ImageAnimated::DecodeContext {
     struct CachedFrame {
         int index = 0;
         std::shared_ptr<const QImage> image;
+        int delay = 10;   // 该帧的显示时长，随帧一起回收（元数据同样有界）
     };
 
     QMutex mutex;
     QWaitCondition wake;                  // 播放头前进/停止时唤醒解码任务
     std::deque<CachedFrame> frames;       // 连续窗口 [front().index, nextIndex)
-    QVector<int> delays;                  // 帧号 → 延迟（只增不减，int 开销可忽略）
+    int currentDelay = 10;                // 当前显示帧的延迟（帧被回收后仍需保留）
     QString path;                         // 解码任务在自己的线程里创建 reader
     int allocationLimitMB = 0;
     int nextIndex = 0;                    // reader->read() 下一次产出的帧号
@@ -41,7 +41,8 @@ struct ImageAnimated::DecodeContext {
     std::atomic<int> correctedFrameCount{0}; // EOF 后修正的总帧数
 
     // 调用方必须持有 mutex
-    bool frameAtLocked(int index, std::shared_ptr<const QImage> &out) const {
+    bool frameAtLocked(int index, std::shared_ptr<const QImage> &out,
+                       int *delay = nullptr) const {
         if (index < 0 || frames.empty())
             return false;
         const int first = frames.front().index;
@@ -51,6 +52,8 @@ struct ImageAnimated::DecodeContext {
         if (offset >= frames.size())
             return false;
         out = frames[offset].image;
+        if (delay)
+            *delay = frames[offset].delay;
         return true;
     }
 };
@@ -259,11 +262,8 @@ public:
             const int index = ctx.nextIndex;
             auto frame = std::make_shared<const QImage>(std::move(img));
             ctx.cachedBytes += frame->sizeInBytes();
-            ctx.frames.push_back({index, std::move(frame)});
+            ctx.frames.push_back({index, std::move(frame), delay});
             ctx.nextIndex = index + 1;
-            if (index >= ctx.delays.size())
-                ctx.delays.resize(index + 1);
-            ctx.delays[index] = delay;
 
             trimLocked(ctx, ctx.playhead.load(std::memory_order_relaxed), doomed);
         }
@@ -333,8 +333,8 @@ void ImageAnimated::loadMovie(int allocationLimitMB) {
     const int firstDelay = qMax(10, reader.nextImageDelay());
     {
         QMutexLocker locker(&ctx->mutex);
-        ctx->delays.append(firstDelay);
-        ctx->frames.push_back({0, firstFrame});
+        ctx->frames.push_back({0, firstFrame, firstDelay});
+        ctx->currentDelay = firstDelay;
         ctx->nextIndex = 1;
         ctx->cachedBytes = firstFrame->sizeInBytes();
     }
@@ -380,9 +380,7 @@ int ImageAnimated::nextFrameDelay() const {
     if (!mCtx || mCurrentFrame < 0)
         return 0;
     QMutexLocker locker(&mCtx->mutex);
-    if (mCurrentFrame >= mCtx->delays.size())
-        return 0;
-    return mCtx->delays.at(mCurrentFrame);
+    return mCtx->currentDelay;
 }
 
 bool ImageAnimated::isValid() const {
@@ -425,6 +423,7 @@ bool ImageAnimated::jumpToFrame(int frameNumber) {
     }
 
     std::shared_ptr<const QImage> frame;
+    int frameDelay = 10;
     bool startTask = false;
     FrameDeque doomed;   // 在锁外析构，避免大 QImage 释放阻塞 GUI
     {
@@ -434,7 +433,7 @@ bool ImageAnimated::jumpToFrame(int frameNumber) {
         const int corrected = mCtx->correctedFrameCount.load(std::memory_order_acquire);
         if (corrected > 0 && frameNumber >= corrected)
             return false;
-        if (!mCtx->frameAtLocked(frameNumber, frame)) {
+        if (!mCtx->frameAtLocked(frameNumber, frame, &frameDelay)) {
             // 请求后台补齐；播放头同步前移，前瞻窗口随之移动
             mCtx->wantMore.store(true, std::memory_order_relaxed);
             // 对象可能刚被 reset() 停过（shutdown=true）：清除退出标志，
@@ -458,6 +457,7 @@ bool ImageAnimated::jumpToFrame(int frameNumber) {
         // 命中缓存：同步取消挂起的旧跳转，否则后台稍后会把播放头拖回废弃目标
         mCtx->requestedFrame.store(-1, std::memory_order_release);
         mCtx->playhead.store(frameNumber, std::memory_order_relaxed);
+        mCtx->currentDelay = frameDelay;
         trimLocked(*mCtx, frameNumber, doomed);
         mCtx->wake.wakeOne();
     }

@@ -50,6 +50,7 @@ private:
 
 // 一次 ReadDirectoryChangesW 返回的单个通知条目
 struct NotifyEvent {
+    QString directoryPath;   // 产生该通知的监视目录（切换路径后仍能正确归属）
     QString fileName;
     DWORD action;
 };
@@ -81,7 +82,7 @@ private:
     bool handleRestart(QString &currentPath, int &quietReads);
     enum class WaitResult { Ok, Stop, Retry };
     WaitResult waitOnce(DWORD &bytesReturned);
-    QVector<NotifyEvent> parseBatch(DWORD bytesReturned);
+    QVector<NotifyEvent> parseBatch(DWORD bytesReturned, const QString &directoryPath);
     static void dedupModified(QVector<NotifyEvent> &batch);
     void emitAndMaybeShrink(const QVector<NotifyEvent> &batch, DWORD bytesReturned, int &quietReads);
 
