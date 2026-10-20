@@ -234,6 +234,10 @@ void MW::showVideo(QString file) {
     viewerWidget->showVideo(std::move(file));
 }
 
+void MW::resumeAnimation() {
+    viewerWidget->resumeAnimation();
+}
+
 void MW::showContextMenu() {
     viewerWidget->showContextMenu();
 }

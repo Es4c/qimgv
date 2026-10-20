@@ -68,6 +68,9 @@ public slots:
     void scrollLeft();
     void scrollRight();
     void startAnimation();
+    // 仅在动画已暂停且没有等待首帧时恢复播放；供幻灯片启动使用，
+    // 避免在加载在途/已经播放时重启计时器。
+    void resumeAnimation();
     void stopAnimation();
     void closeImage();
     void setExpandImage(bool mode);

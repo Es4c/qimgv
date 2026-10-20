@@ -81,6 +81,8 @@ public:
     void showImage(const QPixmap& pixmap);
     void showAnimation(const std::shared_ptr<ImageAnimated>& image);
     void showVideo(QString file);
+    // 幻灯片启动时恢复已暂停的动画播放（只对当前显示中的有效动画生效）
+    void resumeAnimation();
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     void setCurrentInfo(int fileIndex, int fileCount, const QString& filePath, const QString& fileName, QSize imageSize, qint64 fileSize, bool slideshow, bool shuffle, bool edited);
     void setExifInfo(const QHash<QString, QString> &info);

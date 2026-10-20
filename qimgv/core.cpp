@@ -1331,7 +1331,9 @@ bool Core::loadPath(const QString& path) {
 
     {
         const QString absFilePath = fileInfo.absoluteFilePath();
-        int index = model->indexOfFile(absFilePath);
+        // 精确匹配失败时按平台规则回退（Windows 大小写/分隔符差异），
+        // 命中现有模型条目就直接复用，避免同一文件以不同大小写插入两次。
+        int index = findModelFileIndex(*model, absFilePath, nullptr);
 
         if(index == -1) {
             // 扫描在 worker 上进行，列表此刻必然为空/未包含目标文件：
@@ -1346,10 +1348,17 @@ bool Core::loadPath(const QString& path) {
                 mw->showError(tr("Could not open path: ") + cleanPath);
                 return false;
             }
-            index = model->indexOfFile(absFilePath);
+            index = findModelFileIndex(*model, absFilePath, nullptr);
+            if(index == -1) {
+                state.currentFilePath = previous;
+                mw->showError(tr("Could not open path: ") + cleanPath);
+                return false;
+            }
         }
 
         mw->enableDocumentView();
+        // loadFileIndex() 会把 state.currentFilePath 设为模型条目记录的实际路径：
+        // 大小写回退命中时，导航、缓存查找和当前图像都使用同一规范路径。
         return loadFileIndex(index, true, settings->usePreloader());
     }
 }
@@ -1530,6 +1539,9 @@ void Core::startSlideshowTimer() {
         auto anim = dynamic_cast<ImageAnimated *>(img.get());
         if(!anim)
             return;
+        // 动画播放与固定停留计时是互斥的：先清掉可能属于上一张图的计时器，
+        // 再按单帧/无效或多帧/未知帧数选择唯一的推进方式。
+        slideshowTimer.stop();
         // ⭐ 只对"确知单帧"或"首帧都没解出来"的情况起固定停留计时。
         // frameCount() == 0 是帧数未知（imageCount() 扫描失败的动画），
         // startAnimation() 会正常播放它：再挂一个固定计时器会在动画没播完时把图
@@ -1538,8 +1550,15 @@ void Core::startSlideshowTimer() {
         // 的 count == 1 分支也会补发 playbackFinished，幻灯片不会停住。
         // !isValid()：没有一个可显示的帧，视图会拒绝播放（不会有 playbackFinished），
         // 只能靠计时器越过这张坏图。
-        if(anim->frameCount() == 1 || !anim->isValid())
+        if(anim->frameCount() == 1 || !anim->isValid()) {
             slideshowTimer.start();
+        } else {
+            // 幻灯片开启时动画可能正被用户暂停：通过 GUI 控制接口恢复播放，
+            // 由动画计时器和解码任务继续推进；固定停留计时器不能同时挂上。
+            // 加载在途（mStartAnimationOnFrameReady）由 Viewer 的首帧就绪回调启动，
+            // resumeAnimation() 会跳过，避免按旧播放头抢跑。
+            mw->resumeAnimation();
+        }
     }
 }
 

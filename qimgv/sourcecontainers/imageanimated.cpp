@@ -38,7 +38,9 @@ struct ImageAnimated::DecodeContext {
     std::atomic<int> playhead{0};       // 当前播放帧号
     std::atomic<int> requestedFrame{-1}; // 随机跳转请求（-1 = 无）
     std::atomic<int> reportedFrameCount{0}; // imageCount() 的扫描值，EOF 时用于修正
-    std::atomic<int> correctedFrameCount{-1}; // EOF 后修正的总帧数（-1 = 尚未修正）
+    // EOF 后修正的总帧数：-1 = 尚未修正，>0 = 已确认的真实帧数。
+    // 0 不是有效修正值（读取失败/暂停/reader 暂不可用都不代表零帧动画）。
+    std::atomic<int> correctedFrameCount{-1};
 
     // 调用方必须持有 mutex
     bool frameAtLocked(int index, std::shared_ptr<const QImage> &out,
@@ -199,6 +201,17 @@ void trimLocked(ImageAnimated::DecodeContext &ctx, int playhead, FrameDeque &doo
     }
 }
 
+// 只有本次实际解出的帧数 > 0 才能更新修正值。读取失败时 decoded 为 0，
+// 不能把“reader 暂时不可用”写成“已确认 0 帧”；已有修正值（-1 或正数）保持不变。
+void storeCorrectedFrameCount(ImageAnimated::DecodeContext &ctx, int decoded) {
+    if (decoded <= 0)
+        return;
+    const int reported = ctx.reportedFrameCount.load(std::memory_order_relaxed);
+    ctx.correctedFrameCount.store(
+        reported > 0 ? qMin(decoded, reported) : decoded,
+        std::memory_order_release);
+}
+
 // 后台预解码任务：按播放头维护有界窗口，只解码"当前帧 + 前瞻"所需的数据。
 // 注意：任务不持有 ImageAnimated，只能访问 DecodeContext，
 // 因此对象被销毁后任务仍可安全跑完当前帧再退出。
@@ -300,13 +313,12 @@ public:
                 reader = std::move(opened.reader);
 
                 if (opened.status == PrefixOpenStatus::EndOfFile) {
-                    // 重新打开后文件比 ctx.nextIndex 记录的更短：这是真实 EOF，
-                    // 按实际读出的前缀帧数修正（取消不会走到这里）。
+                    // 重新打开后读到了 EOF（取消不会走到这里）。
                     // 前缀总是从文件头重新打开，因此 opened.decoded <= nextIndex。
+                    // opened.decoded > 0 时按实际解码数修正真实帧数。
                     // opened.decoded == 0 表示此刻连第 0 帧都读不出来（文件被删除/
-                    // 截断/独占），而不是"动画只有 0 帧"：保留已解出的窗口并按已知
-                    // 帧数收尾，否则会把可显示的动画整个丢弃，frameCount() 还会退回
-                    // "帧数未知"而失去 jumpToFrame 的越界保护。
+                    // 截断/独占），而不是"动画只有 0 帧"：不能覆盖已有修正值，且要
+                    // 保留已解出的窗口，否则会把可显示的动画整个丢弃。
                     QMutexLocker locker(&ctx.mutex);
                     if (ctx.shutdown.load(std::memory_order_acquire)) {
                         resetWindowLocked(ctx, doomed);
@@ -314,15 +326,14 @@ public:
                         break;
                     }
                     ctx.exhausted = true;
+                    // opened.decoded == 0 表示本次从文件头读第 0 帧失败，不是
+                    // “已确认 0 帧”；保留已有修正值，窗口仍按 nextIndex 保留。
+                    const int actualDecoded = opened.decoded;
                     const int decoded =
-                        opened.decoded > 0 ? opened.decoded : ctx.nextIndex;
+                        actualDecoded > 0 ? actualDecoded : ctx.nextIndex;
                     trimWindowEndLocked(ctx, decoded, doomed);
                     ctx.nextIndex = decoded;
-                    const int reported =
-                        ctx.reportedFrameCount.load(std::memory_order_relaxed);
-                    ctx.correctedFrameCount.store(
-                        reported > 0 ? qMin(decoded, reported) : decoded,
-                        std::memory_order_release);
+                    storeCorrectedFrameCount(ctx, actualDecoded);
                     ctx.running.store(false, std::memory_order_release);
                     // 与单帧 read() 的 EOF 路径一致：若挂起的跳转仍落在实际帧数内，
                     // 保持任务存活，下一轮从 0 回绕重解码
@@ -363,13 +374,11 @@ public:
             if (img.isNull()) {
                 // 实际帧数可能少于 imageCount() 的扫描值（损坏/截断的动画）；
                 // imageCount() 未知（<=0）时以实际解出的帧数为准。
-                // nextIndex 只由顺序成功解码推进，因此这里就是真实帧数
+                // nextIndex 只由顺序成功解码推进，因此 decoded > 0 时就是真实帧数；
+                // decoded == 0 表示第 0 帧读失败，不能写成“已确认 0 帧”。
                 ctx.exhausted = true;
                 const int decoded = ctx.nextIndex;
-                const int reported = ctx.reportedFrameCount.load(std::memory_order_relaxed);
-                ctx.correctedFrameCount.store(
-                    reported > 0 ? qMin(decoded, reported) : decoded,
-                    std::memory_order_release);
+                storeCorrectedFrameCount(ctx, decoded);
                 ctx.running.store(false, std::memory_order_release);
                 // 循环播放回到已回收的首帧时会带着 requestedFrame 在此刻到达：
                 // 保持任务存活，下一轮按请求 rewind 重解码，避免循环播放停住。
@@ -496,9 +505,10 @@ void ImageAnimated::loadMovie(int allocationLimitMB) {
 int ImageAnimated::frameCount() const {
     if (!mCtx)
         return 0;
-    // EOF 后使用修正值（reportedFrameCount 未知时等于实际解码帧数）
+    // EOF 后只有正数修正值才是可靠上限；0 按未知帧数处理（不是有效的
+    // 修正值，旧状态也不应因此拒绝所有 jumpToFrame）。
     const int corrected = mCtx->correctedFrameCount.load(std::memory_order_acquire);
-    if (corrected >= 0)
+    if (corrected > 0)
         return corrected;
     return mFrameCount.load(std::memory_order_relaxed);
 }
@@ -557,9 +567,10 @@ bool ImageAnimated::jumpToFrame(int frameNumber) {
     {
         QMutexLocker locker(&mCtx->mutex);
         // 外层检查与取锁之间解码任务可能刚到达 EOF 并发布修正帧数：
-        // 在锁内复查一次，避免为不存在的帧启动一次昂贵的顺序前缀定位
+        // 在锁内复查一次，避免为不存在的帧启动一次昂贵的顺序前缀定位。
+        // 只有正数修正值才能作为可靠上限；0 表示未知，不能拒绝所有跳转。
         const int corrected = mCtx->correctedFrameCount.load(std::memory_order_acquire);
-        if (corrected >= 0 && frameNumber >= corrected)
+        if (corrected > 0 && frameNumber >= corrected)
             return false;
         if (!mCtx->frameAtLocked(frameNumber, frame, &frameDelay)) {
             // 请求后台补齐；播放头同步前移，前瞻窗口随之移动

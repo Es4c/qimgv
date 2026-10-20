@@ -317,6 +317,20 @@ void ImageViewerV2::startAnimation()
     }
 }
 
+void ImageViewerV2::resumeAnimation()
+{
+    // 幻灯片启动时只恢复“已经暂停”的动画：
+    // - 已在播放时不要重启计时器，否则会重置帧延迟并与进行中的预解码抢请求；
+    // - 首帧仍在后台解码（mStartAnimationOnFrameReady）时由 showAnimationFrame()
+    //   的就绪回调启动，提前开始会让计时器按旧播放头抢跑；
+    // - 已知单帧/无效动画由 Core 的固定停留计时器处理，不在这里启动。
+    if (!movie || mStartAnimationOnFrameReady || animationTimer->isActive())
+        return;
+    if (movie->frameCount() == 1)
+        return;
+    startAnimation();
+}
+
 void ImageViewerV2::stopAnimation()
 {
     if (movie) {

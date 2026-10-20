@@ -282,6 +282,11 @@ void ViewerWidget::startPlayback() {
     }
 }
 
+void ViewerWidget::resumeAnimation() {
+    if(currentWidget == IMAGEVIEWER && imageViewer->hasAnimation())
+        imageViewer->resumeAnimation();
+}
+
 void ViewerWidget::setFitMode(ImageFitMode mode) {
     if(mode == FIT_WINDOW)
         emit fitWindow();
