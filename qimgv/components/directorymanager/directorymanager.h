@@ -224,14 +224,32 @@ private:
     QTimer mEventBatchTimer;
     QVector<PendingEvent> mPendingEvents;
 
+    // 扫描启动与 watcher 路径交接的顺序保证：
+    // 等待目标目录真正 arm 后再投递扫描；watcher 卡死/失败才走超时兜底。
+    QTimer mWatchReadyTimer;
+    QString mPendingScanPath;
+    quint64 mPendingScanGeneration = 0;
+    bool mPendingScanRecursive = false;
+    bool mScanStartPending = false;
+    // 超时/失败兜底扫描开始时 watcher 尚未 arm；若之后 arm，需要补一次扫描关闭交接窗口
+    bool mScanStartedWithoutWatch = false;
+
     void readSettings();
     // watcher 事件入口：只接受当前监视目录的事件；扫描期间先入队，结束后重放
     bool acceptsWatcherEvent(const QString &directoryPath) const;
     void queueWatcherEvent(PendingEvent ev);
-    void loadEntryListAsync(const QString &directoryPath, bool recursive);
+    void loadEntryListAsync(const QString &directoryPath, bool recursive,
+                            bool preservePendingEvents = false);
+    // watcher 就绪后再投递扫描：目录切换的 arm 窗口由就绪握手覆盖。
+    // 返回 true 表示本次调用确实投递了扫描。
+    bool startPendingScan();
+    void onWatchReadyTimeout();
+    void cancelPendingScan();
+    void dispatchScan(const QString &directoryPath, bool recursive, quint64 generation);
     void applyScanResult(std::vector<FSEntry> files, std::vector<FSEntry> dirs,
                          quint64 generation, const QString &path,
                          SortingMode scannedSortMode, bool scannedSortFolders);
+    void clearEntryListData();
     void clearEntryList();
     bool path_entry_compare(const FSEntry &e1, const FSEntry &e2) const;
     bool path_entry_compare_reverse(const FSEntry &e1, const FSEntry &e2) const;
@@ -264,6 +282,8 @@ private slots:
     void onFileModifiedExternal(const QString &directoryPath, const QString &fileName);
     void onFileRenamedExternal(const QString &directoryPath, const QString &oldFileName,
                                const QString &newFileName);
+    void onWatchPathReady(const QString &directoryPath);
+    void onWatchPathFailed(const QString &directoryPath);
 
 signals:
     void loaded(const QString &path);

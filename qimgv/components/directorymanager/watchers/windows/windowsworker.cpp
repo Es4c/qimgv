@@ -2,6 +2,7 @@
 #include "windowsworker.h"
 #include "windowswatcher_p.h"
 #include <cstddef>
+#include <QDir>
 #include <QSet>
 #include <QThread>
 
@@ -15,6 +16,9 @@ constexpr int kShrinkQuietReads = 4;                        // 连续多少次�
 
 WindowsWorker::WindowsWorker() {
     buffer.resize(kInitialBufferSize);
+    readEvent.reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    wakeEvent.reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    overlapped.hEvent = readEvent.get();
 }
 
 void WindowsWorker::setRunning(bool running) {
@@ -22,7 +26,11 @@ void WindowsWorker::setRunning(bool running) {
 
     if (!running) {
         needsRestart.store(false, std::memory_order_release); // ⭐ 防止退出时误重启
-        cancelIo();  // 中断阻塞 I/O
+        setReadyPath(QString());
+        // 只唤醒 worker，由 worker 线程在 cleanup 中安全取消挂起读；
+        // 避免 GUI 线程跨线程 CancelIoEx 与句柄关闭/复用产生竞态。
+        if (wakeEvent)
+            SetEvent(wakeEvent.get());
     }
 }
 
@@ -31,30 +39,37 @@ void WindowsWorker::setWatchPath(const QString& path) {
     pendingPath = path;
 }
 
-void WindowsWorker::cancelIo() {
-    HANDLE hDir = activeHandle.load(std::memory_order_acquire);
-    if (hDir != INVALID_HANDLE_VALUE) {
-        CancelIoEx(hDir, nullptr);
-    }
-}
-
 void WindowsWorker::requestDirectoryHandle(const QString& path) {
-    bool shouldCancel = false;
     {
         QMutexLocker locker(&pathMutex);
-        // 路径没变且句柄有效 → 无需重启
+        // 路径没变且句柄有效 → 无需重启（监视仍保持）
         if (path == pendingPath &&
             activeHandle.load(std::memory_order_acquire) != INVALID_HANDLE_VALUE) {
             return;
         }
         pendingPath = path;
-        shouldCancel = (activeHandle.load(std::memory_order_acquire) != INVALID_HANDLE_VALUE);
+        // 请求一旦变化，旧路径的"就绪"立即失效：扫描必须等新 arm 完成
+        readyPath.clear();
     }
     needsRestart.store(true, std::memory_order_release);
-    // 立即中断当前阻塞的 ReadDirectoryChangesW，让循环快速响应新路径
-    if (shouldCancel) {
-        cancelIo();
-    }
+    // 只唤醒 worker：旧读由 worker 线程自己取消，避免 GUI 线程的 CancelIoEx
+    // 在新句柄复用同一句柄值后误取消刚挂上的新读。
+    if (wakeEvent)
+        SetEvent(wakeEvent.get());
+}
+
+bool WindowsWorker::isWatchPathReady(const QString& path) const {
+    QMutexLocker locker(&pathMutex);
+    if (readyPath.isEmpty())
+        return false;
+    // Windows 路径大小写不敏感，且允许尾部分隔符差异
+    return QDir::cleanPath(readyPath).compare(
+               QDir::cleanPath(path), Qt::CaseInsensitive) == 0;
+}
+
+void WindowsWorker::setReadyPath(const QString& path) {
+    QMutexLocker locker(&pathMutex);
+    readyPath = path;
 }
 
 HANDLE WindowsWorker::openDirectoryHandle(const QString& path) {
@@ -68,7 +83,7 @@ HANDLE WindowsWorker::openDirectoryHandle(const QString& path) {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             nullptr,
             OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
             nullptr);
 
         if (hDir == INVALID_HANDLE_VALUE) {
@@ -105,7 +120,8 @@ bool WindowsWorker::handleRestart(QString &currentPath, int &quietReads) {
         QMutexLocker locker(&pathMutex);
         newPath = pendingPath;
     }
-    // 先使原子句柄失效，避免 GUI 线程 cancel 到旧句柄
+    // 先撤销就绪状态并使原子句柄失效，避免 GUI 线程把旧句柄当成就绪
+    setReadyPath(QString());
     activeHandle.store(INVALID_HANDLE_VALUE, std::memory_order_release);
     hDirectory.close();
     currentPath = std::move(newPath);
@@ -120,32 +136,93 @@ bool WindowsWorker::handleRestart(QString &currentPath, int &quietReads) {
     return hDirectory.get() != INVALID_HANDLE_VALUE;
 }
 
-WindowsWorker::WaitResult WindowsWorker::waitOnce(DWORD &bytesReturned) {
+bool WindowsWorker::armRead(const QString& directoryPath) {
+    if (hDirectory.get() == INVALID_HANDLE_VALUE || overlapped.hEvent == nullptr)
+        return false;
+
     constexpr DWORD notifyFilter =
         FILE_NOTIFY_CHANGE_FILE_NAME |
         FILE_NOTIFY_CHANGE_DIR_NAME |
         FILE_NOTIFY_CHANGE_ATTRIBUTES |
         FILE_NOTIFY_CHANGE_SIZE |
         FILE_NOTIFY_CHANGE_LAST_WRITE;
+
+    while (isRunning.load(std::memory_order_acquire)) {
+        ResetEvent(overlapped.hEvent);
+        const BOOL ok = ReadDirectoryChangesW(
+            hDirectory.get(), buffer.data(), static_cast<DWORD>(buffer.size()), FALSE,
+            notifyFilter, nullptr, &overlapped, nullptr);
+        if (ok) {
+            readPending = true;
+            // stop 期间成功挂上的读不再发布就绪，由 cleanup 统一取消；
+            // 仍返回 true，避免把正常停止误报成 watchPathFailed。
+            if (!isRunning.load(std::memory_order_acquire))
+                return true;
+            if (announceReady) {
+                announceReady = false;
+                // 先发布就绪状态再发信号：查询与信号两条路径都不会看到假阴性
+                setReadyPath(directoryPath);
+                emit watchPathReady(directoryPath);
+            }
+            return true;
+        }
+
+        const DWORD err = GetLastError();
+        // ⭐ 网络目录(SMB)缓冲 >64KB 触发 ERROR_INVALID_PARAMETER → 降档至 64KB
+        if (err == ERROR_INVALID_PARAMETER && buffer.size() > kNetworkBufferSize) {
+            buffer.resize(kNetworkBufferSize);
+            networkBufferCapped = true;
+            continue;
+        }
+        return false;
+    }
+    return false;
+}
+
+void WindowsWorker::cancelPendingRead() {
+    if (!readPending)
+        return;
+
+    HANDLE hDir = hDirectory.get();
+    if (hDir != INVALID_HANDLE_VALUE && overlapped.hEvent != nullptr) {
+        CancelIoEx(hDir, &overlapped);
+        DWORD ignored = 0;
+        // 等内核收回缓冲区所有权后再关闭/复用 buffer
+        GetOverlappedResult(hDir, &overlapped, &ignored, TRUE);
+    }
+    readPending = false;
+}
+
+WindowsWorker::WaitResult WindowsWorker::waitOnce(DWORD &bytesReturned) {
     bytesReturned = 0;
-    if(!ReadDirectoryChangesW(hDirectory.get(), buffer.data(),
-                              static_cast<DWORD>(buffer.size()), FALSE,
-                              notifyFilter, &bytesReturned, nullptr, nullptr)) {
+    if (!readPending)
+        return WaitResult::Retry;
+
+    constexpr DWORD kWaitHandleCount = 2;
+    HANDLE waitHandles[kWaitHandleCount] = { overlapped.hEvent, wakeEvent.get() };
+    const DWORD waitResult =
+        WaitForMultipleObjects(kWaitHandleCount, waitHandles, FALSE, INFINITE);
+    if (waitResult == WAIT_OBJECT_0 + 1) {
+        ResetEvent(wakeEvent.get());
+        return WaitResult::Retry;
+    }
+    if (waitResult != WAIT_OBJECT_0)
+        return WaitResult::Stop;
+
+    readPending = false;
+    if (!GetOverlappedResult(hDirectory.get(), &overlapped, &bytesReturned, FALSE)) {
         const DWORD err = GetLastError();
         // ⭐ 被 cancel 且正在退出 → 直接结束
-        if(!isRunning.load(std::memory_order_acquire))
+        if (!isRunning.load(std::memory_order_acquire))
             return WaitResult::Stop;
-        // ⭐ 被 restart 打断
-        if(needsRestart.load(std::memory_order_acquire))
-            return WaitResult::Retry;
-        // ⭐ 陈旧 cancel（句柄值复用后被误取消的新读）→ 可重试，非致命
-        if(err == ERROR_OPERATION_ABORTED)
+        // ⭐ 被 restart 打断（worker 自己 CancelIoEx）或异常 abort → 重挂
+        if (needsRestart.load(std::memory_order_acquire) || err == ERROR_OPERATION_ABORTED)
             return WaitResult::Retry;
         // ⭐ 系统内部缓冲溢出（事件已丢失，扩容应用缓冲无效）→ 直接重挂
-        if(err == ERROR_NOTIFY_ENUM_DIR)
+        if (err == ERROR_NOTIFY_ENUM_DIR)
             return WaitResult::Retry;
-        // ⭐ 网络目录(SMB)缓冲 >64KB 触发 ERROR_INVALID_PARAMETER → 降档至 64KB
-        if(err == ERROR_INVALID_PARAMETER && buffer.size() > kNetworkBufferSize) {
+        // ⭐ 网络目录(SMB)在完成阶段报缓冲过大：降档后重挂
+        if (err == ERROR_INVALID_PARAMETER && buffer.size() > kNetworkBufferSize) {
             buffer.resize(kNetworkBufferSize);
             networkBufferCapped = true;
             return WaitResult::Retry;
@@ -213,34 +290,76 @@ void WindowsWorker::emitAndMaybeShrink(const QVector<NotifyEvent> &batch, DWORD 
 
 void WindowsWorker::run() {
     emit started();
+    announceReady = true;
+    readPending = false;
+    // 上一次 run 若是网络目录，64KB 上限不能带给后续本地目录
+    networkBufferCapped = false;
 
     QString currentPath;
-    if(!ensureInitialHandle(currentPath)) {
-        emit finished();
-        return;
+    bool healthy = ensureInitialHandle(currentPath) && armRead(currentPath);
+    if (!healthy) {
+        setReadyPath(QString());
+        if (isRunning.load(std::memory_order_acquire))
+            emit watchPathFailed(currentPath);
     }
 
     // ⭐ 缓冲回收前的连续低利用率读取计数（仅 worker 线程访问）
     int quietReads = 0;
 
-    while(true) {
-        // ⭐ 优先检查运行状态（避免卡住）
-        if(!isRunning.load(std::memory_order_acquire))
-            break;
+    while(healthy && isRunning.load(std::memory_order_acquire)) {
         // ⭐ restart 逻辑
         if(needsRestart.exchange(false, std::memory_order_acquire)) {
-            if(!handleRestart(currentPath, quietReads))
+            QString pending;
+            {
+                QMutexLocker locker(&pathMutex);
+                pending = pendingPath;
+            }
+            // 只有「当前读仍挂着且仍处于就绪状态」时，同路径请求才算已满足。
+            // ready 被中途路径请求清掉时必须重开并重新 arm，不能凭 readPending
+            // 直接恢复，否则扫描可能落在“旧读已完成、下一次读尚未挂上”的缝里。
+            if(pending == currentPath && readPending && isWatchPathReady(currentPath))
+                continue;
+
+            cancelPendingRead();
+            if(!handleRestart(currentPath, quietReads)) {
+                setReadyPath(QString());
+                if (isRunning.load(std::memory_order_acquire))
+                    emit watchPathFailed(currentPath);
+                healthy = false;
                 break;
+            }
+            announceReady = true;
+            if(!armRead(currentPath)) {
+                setReadyPath(QString());
+                if (isRunning.load(std::memory_order_acquire))
+                    emit watchPathFailed(currentPath);
+                healthy = false;
+                break;
+            }
             continue;
         }
-        // ⭐ 发起阻塞调用前复查 restart 标志，缩小 TOCTOU 窗口
-        if(needsRestart.load(std::memory_order_acquire))
-            continue;
+
+        // 上一轮读取已完成/被取消：重新挂上监视后再等待
+        if(!readPending) {
+            if(!armRead(currentPath)) {
+                setReadyPath(QString());
+                if (isRunning.load(std::memory_order_acquire))
+                    emit watchPathFailed(currentPath);
+                healthy = false;
+                break;
+            }
+        }
 
         DWORD bytesReturned = 0;
         const WaitResult wr = waitOnce(bytesReturned);
-        if(wr == WaitResult::Stop)
+        if(wr == WaitResult::Stop) {
+            // 非正常停止（等待失败/读取错误）也要通知等待扫描的一方，
+            // 否则目录加载要多等一次 500ms 超时兜底。
+            setReadyPath(QString());
+            if (isRunning.load(std::memory_order_acquire))
+                emit watchPathFailed(currentPath);
             break;
+        }
         if(wr == WaitResult::Retry)
             continue;
 
@@ -260,6 +379,8 @@ void WindowsWorker::run() {
     }
 
     // ⭐ 确保 handle 关闭（避免悬挂）
+    cancelPendingRead();
+    setReadyPath(QString());
     activeHandle.store(INVALID_HANDLE_VALUE, std::memory_order_release);
     hDirectory.close();
 

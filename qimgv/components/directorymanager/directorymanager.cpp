@@ -8,6 +8,11 @@
 
 namespace fs = std::filesystem;
 
+// watcher 未能及时 arm 时不能永久扣住目录加载：超时后先普通扫描，
+// 之后若 arm 成功再由 onWatchPathReady() 补扫，关闭交接窗口。
+// 正常本地目录在提交线程后几毫秒内就会发出 watchPathReady，不会走到这里。
+constexpr int kWatchReadyTimeoutMs = 500;
+
 // ==================== SuffixMatcher ====================
 
 SuffixMatcher::SuffixMatcher(const QList<QByteArray> &formats) {
@@ -54,6 +59,11 @@ DirectoryManager::DirectoryManager() {
     mEventBatchTimer.setSingleShot(true);
     mEventBatchTimer.setInterval(0);
     connect(&mEventBatchTimer, &QTimer::timeout, this, &DirectoryManager::flushPendingEvents);
+    // watcher arm 握手超时：只影响自动刷新，不能阻塞目录加载
+    mWatchReadyTimer.setSingleShot(true);
+    mWatchReadyTimer.setInterval(kWatchReadyTimeoutMs);
+    connect(&mWatchReadyTimer, &QTimer::timeout,
+            this, &DirectoryManager::onWatchReadyTimeout);
     // 目录扫描单线程：同一时刻只会有一个当前目录，串行扫描即可；
     // 切目录时旧任务按代数自检放弃，不会与新扫描抢磁盘
     mScanPool.setMaxThreadCount(1);
@@ -63,6 +73,7 @@ DirectoryManager::DirectoryManager() {
 DirectoryManager::~DirectoryManager() {
     // 取消在跑的扫描再等待：扫描循环每 256 个条目检查一次代数，不会长时间卡住退出
     mScanGeneration.fetch_add(1, std::memory_order_relaxed);
+    cancelPendingScan();
     mScanPool.waitForDone();
     // watcher 无 parent，需手动停止并释放，避免临时对象泄漏线程
     stopFileWatcher();
@@ -293,6 +304,8 @@ void DirectoryManager::startFileWatcher(const QString &directoryPath) {
     connect(watcher, &DirectoryWatcher::fileDeleted, this, &DirectoryManager::onFileRemovedExternal, Qt::UniqueConnection);
     connect(watcher, &DirectoryWatcher::fileModified, this, &DirectoryManager::onFileModifiedExternal, Qt::UniqueConnection);
     connect(watcher, &DirectoryWatcher::fileRenamed, this, &DirectoryManager::onFileRenamedExternal, Qt::UniqueConnection);
+    connect(watcher, &DirectoryWatcher::watchPathReady, this, &DirectoryManager::onWatchPathReady, Qt::UniqueConnection);
+    connect(watcher, &DirectoryWatcher::watchPathFailed, this, &DirectoryManager::onWatchPathFailed, Qt::UniqueConnection);
     // 线程正在运行时，使用平滑路径切换（不重启线程）
     if(!isFirstTime && watcher->isObserving()) {
         watcher->requestWatchPath(directoryPath);
@@ -309,7 +322,11 @@ void DirectoryManager::stopFileWatcher() {
     disconnect(watcher, &DirectoryWatcher::fileDeleted, this, &DirectoryManager::onFileRemovedExternal);
     disconnect(watcher, &DirectoryWatcher::fileModified, this, &DirectoryManager::onFileModifiedExternal);
     disconnect(watcher, &DirectoryWatcher::fileRenamed, this, &DirectoryManager::onFileRenamedExternal);
+    disconnect(watcher, &DirectoryWatcher::watchPathReady, this, &DirectoryManager::onWatchPathReady);
+    disconnect(watcher, &DirectoryWatcher::watchPathFailed, this, &DirectoryManager::onWatchPathFailed);
     watcher->stopObserving();
+    cancelPendingScan();
+    mScanStartedWithoutWatch = false;
     clearPendingEvents();
 }
 
@@ -392,6 +409,8 @@ bool DirectoryManager::setDirectory(const QString &dirPath) {
     // 让 directoryPath() 立刻变空，避免沿用旧目录的索引
     if(dirPath.isEmpty()) {
         mScanGeneration.fetch_add(1, std::memory_order_relaxed);
+        cancelPendingScan();
+        mScanStartedWithoutWatch = false;
         mScanInProgress = false;
         mDirectoryPath.clear();
         mListSource = SOURCE_DIRECTORY;
@@ -405,9 +424,13 @@ bool DirectoryManager::setDirectory(const QString &dirPath) {
     if(!isReadableDir(QFileInfo(dirPath))) {
         return false;
     }
+    // 同一目录重载不是切目录：保留第一轮扫描期间缓冲的事件，交给最终结果统一重放。
+    // 只有真正的切目录/关闭目录才允许清空事件队列。
+    const bool sameDirectory = !mDirectoryPath.isEmpty()
+                                && sameWatchDirectory(dirPath, mDirectoryPath);
     mListSource = SOURCE_DIRECTORY;
     mDirectoryPath = dirPath;
-    loadEntryListAsync(dirPath, false);
+    loadEntryListAsync(dirPath, false, /*preservePendingEvents=*/sameDirectory);
     return true;
 }
 
@@ -445,6 +468,8 @@ bool DirectoryManager::setDirectoryDirsOnly(const QString &dirPath) {
     mDirectoryPath = dirPath;
     // 放弃可能在跑的目录扫描：其结果路径已不是当前目录
     mScanGeneration.fetch_add(1, std::memory_order_relaxed);
+    cancelPendingScan();
+    mScanStartedWithoutWatch = false;
     mScanInProgress = false;
     // 实例会长期存活（与一次性临时对象不同），排序模式每次都从设置同步
     mSortingMode = sortMode;
@@ -538,7 +563,7 @@ bool DirectoryManager::isDir(const QString &path) const {
     return std::filesystem::is_directory(status);
 }
 
-void DirectoryManager::clearEntryList() {
+void DirectoryManager::clearEntryListData() {
     fileEntryVec.clear();
     dirEntryVec.clear();
     mFileIndexMap.clear();
@@ -547,26 +572,99 @@ void DirectoryManager::clearEntryList() {
     mFilesSorted = false;
     mDirsSorted = false;
     mLastCompareFunction = nullptr;
-    // 清理积压的 watcher 事件，避免旧目录事件串入新列表
+}
+
+void DirectoryManager::clearEntryList() {
+    clearEntryListData();
+    // 切目录/关闭目录才丢弃积压事件；同目录排序重扫必须保留，
+    // 否则排序快照过期时第一轮扫描期间的事件会被第二轮扫描"间接补偿"
     clearPendingEvents();
+}
+
+bool DirectoryManager::startPendingScan() {
+    if (!mScanStartPending)
+        return false;
+
+    if (mPendingScanGeneration != mScanGeneration.load(std::memory_order_relaxed)
+        || !sameWatchDirectory(mPendingScanPath, mDirectoryPath)) {
+        cancelPendingScan();
+        return false;
+    }
+
+    mScanStartPending = false;
+    mWatchReadyTimer.stop();
+    dispatchScan(mPendingScanPath, mPendingScanRecursive, mPendingScanGeneration);
+    return true;
+}
+
+void DirectoryManager::onWatchReadyTimeout() {
+    if (!mScanStartPending)
+        return;
+    // ready 信号可能还在事件队列里：先查权威状态，避免把已 arm 的扫描误判成兜底
+    if (watcher && watcher->isWatchPathReady(mPendingScanPath)) {
+        mScanStartedWithoutWatch = false;
+        startPendingScan();
+        return;
+    }
+    // watcher 迟迟未 arm：先保证目录能显示；若之后 arm，onWatchPathReady() 会补扫一次，
+    // 把「扫描开始 → 真正 arm」这段窗口内的变化重新核对掉。
+    if (startPendingScan())
+        mScanStartedWithoutWatch = true;
+}
+
+void DirectoryManager::cancelPendingScan() {
+    mScanStartPending = false;
+    mWatchReadyTimer.stop();
 }
 
 // ⭐ 枚举 + FSEntry 构建 + 排序全部移到 worker：
 // 10k 文件的目录原先在 GUI 线程同步枚举+stat+排序，会阻塞上百毫秒到数秒。
 // GUI 线程只做「接收结果 + 建立两个索引映射」。
-void DirectoryManager::loadEntryListAsync(const QString &directoryPath, bool recursive) {
-    clearEntryList();
+void DirectoryManager::loadEntryListAsync(const QString &directoryPath, bool recursive,
+                                          bool preservePendingEvents) {
+    cancelPendingScan();
+    if (preservePendingEvents)
+        clearEntryListData();
+    else {
+        clearEntryList();
+        // 新目录：上一次超时兜底标记不再适用
+        mScanStartedWithoutWatch = false;
+    }
     mScanInProgress = true;
 
-    // ⭐ watcher 必须在扫描开始前就切到目标目录：扫描可能持续数秒，
-    // 期间的变化先进入 mPendingEvents，等 applyScanResult() 完成后再重放。
-    // 否则扫描完成后列表会永久缺少这些变化，直到下一次无关事件碰巧刷新。
+    const quint64 generation = mScanGeneration.fetch_add(1, std::memory_order_relaxed) + 1;
+    mPendingScanPath = directoryPath;
+    mPendingScanGeneration = generation;
+    mPendingScanRecursive = recursive;
+    mScanStartPending = true;
+
+    // ⭐ 扫描必须等 watcher 真正 arm：请求切换路径只是登记，worker 关闭旧句柄、
+    // 打开新句柄并发出第一次 ReadDirectoryChangesW 之间存在交接窗口。
+    // 在该窗口内开始扫描，扫描已越过的路径若随后变化且 watcher 尚未 arm，就永久漏事件。
+    // arm 完成后才扫描：arm 之前的变化由扫描直接看到，arm 之后的由事件缓冲重放。
     // 递归模式不启动/停止 watcher（事件由 acceptsWatcherEvent 按 SOURCE_DIRECTORY 过滤），
     // 避免 stop/observe 与线程退出竞争，导致下一次普通目录切换时 watcher 实际未运行。
-    if(mListSource == SOURCE_DIRECTORY)
+    if(mListSource == SOURCE_DIRECTORY) {
         startFileWatcher(directoryPath);
+        if (mScanStartPending) {
+            // 已就绪（同目录重扫或 dummy 平台）立即扫描；否则等信号/失败/超时
+            if (watcher && watcher->isWatchPathReady(directoryPath)) {
+                // 扫描在 arm 之后开始，超时兜底标记不再适用
+                mScanStartedWithoutWatch = false;
+                startPendingScan();
+            } else {
+                mWatchReadyTimer.start();
+            }
+        }
+        return;
+    }
 
-    const quint64 generation = mScanGeneration.fetch_add(1, std::memory_order_relaxed) + 1;
+    mScanStartedWithoutWatch = false;
+    startPendingScan();
+}
+
+void DirectoryManager::dispatchScan(const QString &directoryPath, bool recursive,
+                                    quint64 generation) {
     // 值快照：worker 不读 Settings，也不碰其余成员
     const SuffixMatcher matcher = mSuffixMatcher;
     const SortingMode sortMode = mSortingMode;
@@ -604,7 +702,10 @@ void DirectoryManager::applyScanResult(std::vector<FSEntry> files, std::vector<F
     // 此时 worker 的结果顺序已作废：直接按当前设置重扫（仍在线程池），
     // 不在 GUI 线程对 10 万条 FSEntry 做整表排序
     if(scannedSortMode != mSortingMode || scannedSortFolders != settings->sortFolders()) {
-        loadEntryListAsync(path, mListSource == SOURCE_DIRECTORY_RECURSIVE);
+        // 同目录仅排序快照过期：保留第一轮扫描期间缓冲的事件，交给最终结果统一重放。
+        // 只有切目录/关闭目录才允许清空事件队列。
+        loadEntryListAsync(path, mListSource == SOURCE_DIRECTORY_RECURSIVE,
+                           /*preservePendingEvents=*/true);
         return;
     }
 
@@ -934,6 +1035,45 @@ void DirectoryManager::queueWatcherEvent(PendingEvent ev) {
     // 扫描期间只入队，不启动定时器：列表尚在构建，applyScanResult() 会统一重放
     if(!mScanInProgress)
         mEventBatchTimer.start();
+}
+
+void DirectoryManager::onWatchPathReady(const QString &directoryPath) {
+    if(mScanStartPending && sameWatchDirectory(directoryPath, mPendingScanPath)) {
+        // 信号可能已在队列里停留过久：以 worker 的权威状态为准，
+        // 避免路径 A→B→A 后旧的 ready 信号让扫描抢在新 arm 之前启动。
+        if(watcher && watcher->isWatchPathReady(mPendingScanPath)) {
+            mScanStartedWithoutWatch = false;
+            startPendingScan();
+        }
+        return;
+    }
+
+    // 超时兜底扫描已经开始，watcher 现在才 arm：重新枚举一次，
+    // 关闭「旧扫描越过某路径 → 新 watcher 尚未 arm」的竞态窗口。
+    if(!mScanStartPending
+       && mScanStartedWithoutWatch
+       && mListSource == SOURCE_DIRECTORY
+       && watcher && watcher->isWatchPathReady(directoryPath)
+       && sameWatchDirectory(directoryPath, mDirectoryPath)) {
+        mScanStartedWithoutWatch = false;
+        loadEntryListAsync(mDirectoryPath, false, /*preservePendingEvents=*/true);
+    }
+}
+
+void DirectoryManager::onWatchPathFailed(const QString &directoryPath) {
+    // watcher 无法建立时不能把目录加载一起卡住：立即退化为普通扫描。
+    // 若这是旧 worker 的失败、之后新 worker 又成功 arm，按兜底扫描做补偿。
+    if(!mScanStartPending || !sameWatchDirectory(directoryPath, mPendingScanPath))
+        return;
+
+    // 失败信号也可能滞后：若当前句柄其实已经 arm，直接按正常就绪处理
+    if(watcher && watcher->isWatchPathReady(mPendingScanPath)) {
+        mScanStartedWithoutWatch = false;
+        startPendingScan();
+        return;
+    }
+    if(startPendingScan())
+        mScanStartedWithoutWatch = true;
 }
 
 void DirectoryManager::onFileRemovedExternal(const QString &directoryPath, const QString &fileName) {

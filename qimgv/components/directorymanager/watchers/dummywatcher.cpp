@@ -22,3 +22,22 @@ DummyWatcher::DummyWatcher() : DirectoryWatcher(new DummyWatcherPrivate(this))
 {
     qDebug() << TAG << MESSAGE;
 }
+
+bool DummyWatcher::isWatchPathReady(const QString& path) const
+{
+    // 无真实监视可等待：扫描直接开始，避免非 Windows 平台白等超时
+    Q_UNUSED(path);
+    return true;
+}
+
+void DummyWatcher::observe()
+{
+    DirectoryWatcher::observe();
+    emit watchPathReady(watchPath());
+}
+
+void DummyWatcher::requestWatchPath(const QString& path)
+{
+    setWatchPath(path);
+    emit watchPathReady(path);
+}
