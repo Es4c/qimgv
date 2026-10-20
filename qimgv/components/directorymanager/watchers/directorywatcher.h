@@ -15,8 +15,9 @@ public:
     virtual void setWatchPath(const QString& watchPath);
     virtual QString watchPath() const;
     bool isObserving() const;
-    // 目标目录是否已经真正挂上监视（Windows 上指 ReadDirectoryChangesW 已成功发起）。
-    // 扫描必须等到它返回 true 后再开始，否则切换目录的交接窗口内可能漏事件。
+    // 目标目录是否已经真正挂上监视（Windows 上指 ReadDirectoryChangesW 已成功
+    // 发起且当前仍在挂起等待）。扫描必须等到它返回 true 后再开始，否则切换目录
+    // 或读取完成到下一次 arm 之间的交接窗口内可能漏事件。
     virtual bool isWatchPathReady(const QString& path) const;
 
 public Q_SLOTS:
@@ -35,6 +36,8 @@ Q_SIGNALS:
     void watchPathReady(const QString& directoryPath);
     // 无法建立监视（目录不可打开/句柄失效）；扫描仍需继续，只是没有自动刷新
     void watchPathFailed(const QString& directoryPath);
+    // 系统通知缓冲溢出，部分变化已丢失；目录管理器需要重扫校正
+    void watchPathOverflowed(const QString& directoryPath);
     void observingStarted();
     void observingStopped();
 

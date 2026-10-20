@@ -13,6 +13,19 @@ WindowsWatcherPrivate::WindowsWatcherPrivate(WindowsWatcher* qq)
     // 排队连接需要 QVector<NotifyEvent> 的元类型
     qRegisterMetaType<QVector<NotifyEvent>>("QVector<NotifyEvent>");
     connect(windowsWorker, &WindowsWorker::notifyEvents, this, &WindowsWatcherPrivate::dispatchNotify);
+    connect(windowsWorker, &WindowsWorker::watchPathOverflowed,
+            this, &WindowsWatcherPrivate::discardPendingRenames);
+}
+
+void WindowsWatcherPrivate::discardPendingRenames(const QString& directoryPath)
+{
+    // 溢出可能丢掉某个 OLD 对应的 NEW；留着陈旧 OLD 会在后续 NEW 到达时
+    // 错配成假重命名。重扫会以磁盘状态重建列表，这些半截状态直接丢弃。
+    for (qsizetype i = renameOldQueue.size(); i > 0; --i) {
+        const qsizetype index = i - 1;
+        if (renameOldQueue.at(index).first == directoryPath)
+            renameOldQueue.removeAt(index);
+    }
 }
 
 void WindowsWatcherPrivate::dispatchNotify(const QVector<NotifyEvent>& events)
@@ -77,6 +90,8 @@ WindowsWatcher::WindowsWatcher(QObject* parent)
             this, &DirectoryWatcher::watchPathReady);
     connect(windowsWorker, &WindowsWorker::watchPathFailed,
             this, &DirectoryWatcher::watchPathFailed);
+    connect(windowsWorker, &WindowsWorker::watchPathOverflowed,
+            this, &DirectoryWatcher::watchPathOverflowed);
     connect(windowsWorker, &WindowsWorker::started, this, &WindowsWatcher::observingStarted);
     connect(windowsWorker, &WindowsWorker::finished, this, &WindowsWatcher::observingStopped);
 }

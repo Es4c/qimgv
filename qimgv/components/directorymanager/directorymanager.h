@@ -284,6 +284,7 @@ private slots:
                                const QString &newFileName);
     void onWatchPathReady(const QString &directoryPath);
     void onWatchPathFailed(const QString &directoryPath);
+    void onWatchPathOverflowed(const QString &directoryPath);
 
 signals:
     void loaded(const QString &path);

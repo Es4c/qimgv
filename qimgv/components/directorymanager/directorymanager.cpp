@@ -306,6 +306,7 @@ void DirectoryManager::startFileWatcher(const QString &directoryPath) {
     connect(watcher, &DirectoryWatcher::fileRenamed, this, &DirectoryManager::onFileRenamedExternal, Qt::UniqueConnection);
     connect(watcher, &DirectoryWatcher::watchPathReady, this, &DirectoryManager::onWatchPathReady, Qt::UniqueConnection);
     connect(watcher, &DirectoryWatcher::watchPathFailed, this, &DirectoryManager::onWatchPathFailed, Qt::UniqueConnection);
+    connect(watcher, &DirectoryWatcher::watchPathOverflowed, this, &DirectoryManager::onWatchPathOverflowed, Qt::UniqueConnection);
     // 线程正在运行时，使用平滑路径切换（不重启线程）
     if(!isFirstTime && watcher->isObserving()) {
         watcher->requestWatchPath(directoryPath);
@@ -324,6 +325,7 @@ void DirectoryManager::stopFileWatcher() {
     disconnect(watcher, &DirectoryWatcher::fileRenamed, this, &DirectoryManager::onFileRenamedExternal);
     disconnect(watcher, &DirectoryWatcher::watchPathReady, this, &DirectoryManager::onWatchPathReady);
     disconnect(watcher, &DirectoryWatcher::watchPathFailed, this, &DirectoryManager::onWatchPathFailed);
+    disconnect(watcher, &DirectoryWatcher::watchPathOverflowed, this, &DirectoryManager::onWatchPathOverflowed);
     watcher->stopObserving();
     cancelPendingScan();
     mScanStartedWithoutWatch = false;
@@ -1050,10 +1052,12 @@ void DirectoryManager::onWatchPathReady(const QString &directoryPath) {
 
     // 超时兜底扫描已经开始，watcher 现在才 arm：重新枚举一次，
     // 关闭「旧扫描越过某路径 → 新 watcher 尚未 arm」的竞态窗口。
+    // 这里不能要求 isWatchPathReady() 为 true：信号可能在队列里停留期间
+    // 又完成了一次读取。loadEntryListAsync() 会重新等待下一次 arm 再扫描。
     if(!mScanStartPending
        && mScanStartedWithoutWatch
        && mListSource == SOURCE_DIRECTORY
-       && watcher && watcher->isWatchPathReady(directoryPath)
+       && watcher
        && sameWatchDirectory(directoryPath, mDirectoryPath)) {
         mScanStartedWithoutWatch = false;
         loadEntryListAsync(mDirectoryPath, false, /*preservePendingEvents=*/true);
@@ -1074,6 +1078,17 @@ void DirectoryManager::onWatchPathFailed(const QString &directoryPath) {
     }
     if(startPendingScan())
         mScanStartedWithoutWatch = true;
+}
+
+void DirectoryManager::onWatchPathOverflowed(const QString &directoryPath) {
+    if(!acceptsWatcherEvent(directoryPath))
+        return;
+
+    // Windows 通知缓冲溢出意味着部分变化已经丢失，只能以磁盘状态为准重扫。
+    // 保留已收到的事件；loadEntryListAsync() 会重新等待 watcher arm 后再扫描，
+    // 避免重扫本身又落在“旧读完成、新读尚未挂起”的窗口里。
+    loadEntryListAsync(mDirectoryPath, /*recursive=*/false,
+                       /*preservePendingEvents=*/true);
 }
 
 void DirectoryManager::onFileRemovedExternal(const QString &directoryPath, const QString &fileName) {

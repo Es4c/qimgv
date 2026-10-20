@@ -78,6 +78,8 @@ signals:
     // ⭐ 只有 ReadDirectoryChangesW 已成功发起后才发出：该次 arm 之后的变化由它接收
     void watchPathReady(const QString& directoryPath);
     void watchPathFailed(const QString& directoryPath);
+    // 系统通知缓冲溢出（ERROR_NOTIFY_ENUM_DIR）：部分变化已丢失，接收方需重扫
+    void watchPathOverflowed(const QString& directoryPath);
     void finished();
     void started();
 
@@ -91,7 +93,7 @@ private:
     bool armRead(const QString& directoryPath);
     void cancelPendingRead();
     void setReadyPath(const QString& path);
-    enum class WaitResult { Ok, Stop, Retry };
+    enum class WaitResult { Ok, Stop, Retry, Overflow };
     WaitResult waitOnce(DWORD &bytesReturned);
     QVector<NotifyEvent> parseBatch(DWORD bytesReturned, const QString &directoryPath);
     static void dedupModified(QVector<NotifyEvent> &batch);
@@ -107,10 +109,14 @@ private:
     ScopedHandle readEvent;
     ScopedHandle wakeEvent;
     OVERLAPPED overlapped{};
-    bool readPending = false;           // 仅 worker 线程访问
-    bool announceReady = true;          // 下一次成功 arm 后发 watchPathReady（仅 worker）
-    mutable QMutex pathMutex;           // 保护 pendingPath 与 readyPath
+    // worker 线程写入，GUI 线程通过 isWatchPathReady() 读取。
+    // 一次读取完成后必须先清零；readyPath 只有在当前读仍挂起时才算有效。
+    std::atomic<bool> readPending{false};
+    mutable QMutex pathMutex;           // 保护 pendingPath、readyPath 与 announceReady
     QString readyPath;                  // 已成功挂上监视的目录，受 pathMutex 保护
+    // 下一次成功 arm 后是否发 watchPathReady。请求方只在状态可能已失效时
+    // 需要信号；正常每批事件完成后重新 arm 不必向 GUI 重复投递。
+    bool announceReady = true;           // 受 pathMutex 保护
 };
 
 #endif // WINDOWSWORKER_H
