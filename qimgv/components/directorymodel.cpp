@@ -85,6 +85,10 @@ bool DirectoryModel::isEmpty() const {
     return dirManager.isEmpty();
 }
 
+bool DirectoryModel::isScanning() const {
+    return dirManager.isScanning();
+}
+
 const QString &DirectoryModel::firstFile() const {
     return dirManager.firstFile();
 }
@@ -104,6 +108,10 @@ const QString &DirectoryModel::prevOf(const QString &filePath) const {
 // -----------------------------------------------------------------------------
 bool DirectoryModel::forceInsert(const QString &filePath) {
     return dirManager.forceInsertFileEntry(filePath);
+}
+
+bool DirectoryModel::insertFile(const QString &filePath) {
+    return dirManager.insertFileEntry(filePath);
 }
 
 void DirectoryModel::setSortingMode(SortingMode mode) {
@@ -303,6 +311,10 @@ std::shared_ptr<Image> DirectoryModel::getImage(const QString &filePath) {
     if (auto img = cache.get(filePath))
         return img;
     return loader.load(filePath);
+}
+
+std::shared_ptr<Image> DirectoryModel::cachedImage(const QString &filePath) {
+    return cache.get(filePath);
 }
 
 void DirectoryModel::updateImage(const QString &filePath, const std::shared_ptr<Image> &img) {

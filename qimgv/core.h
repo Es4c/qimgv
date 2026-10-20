@@ -23,9 +23,18 @@
 #include <malloc.h>
 #endif
 
+// 目录异步扫描后需要打开的目标图（切目录/以目录启动时用）
+enum class PendingOpen {
+    None,
+    First,
+    Last
+};
+
 struct State {
     bool hasActiveImage = false;
-    bool delayModel = false;
+    // ⭐ 目录枚举是异步的：列表就绪（onModelLoaded）后才打开首图/末图，
+    // 取代原先"先开单文件、再延迟 40ms 扫描目录"的补丁式时序
+    PendingOpen pendingOpen = PendingOpen::None;
     QString currentFilePath = "";
     QString directoryPath = "";
     std::shared_ptr<Image> currentImg;
@@ -220,5 +229,6 @@ private slots:
     void prevDirectory(bool selectLast);
     void prevDirectory();
     void print();
-    void modelDelayLoad();
+    // 目录列表就绪后打开 state.pendingOpen 指定的图片；空目录则补发 firstImageReady
+    void openPendingImage();
 };

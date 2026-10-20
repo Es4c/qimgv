@@ -310,6 +310,33 @@ void Core::syncRandomizer() {
 void Core::onModelLoaded() {
     if(shuffle)
         syncRandomizer();
+
+    if(state.pendingOpen != PendingOpen::None) {
+        openPendingImage();
+        return;
+    }
+
+    // 目录枚举在 worker 线程，扫描完成只重建「路径 → 索引」映射与文件数；
+    // 图片缓存按路径键控，与索引无关，这里不必（也不能）重新挂载当前图：
+    // 扫描可能在用户已经开始缩放/平移之后才结束，重挂会重置视图
+    updateInfoString();
+}
+
+// 目录列表就绪后打开目标图。空目录也要发 firstImageReady：
+// main.cpp 以它作为显示主窗口的时机（命令行传目录启动依赖这条路径）
+void Core::openPendingImage() {
+    const PendingOpen pending = state.pendingOpen;
+    state.pendingOpen = PendingOpen::None;
+
+    if(model->fileCount() > 0) {
+        const int index = (pending == PendingOpen::Last) ? model->fileCount() - 1 : 0;
+        // 兜底：即使索引异常也要发 firstImageReady，否则命令行启动时主窗口不显示
+        if(!loadFileIndex(index, true, settings->usePreloader()))
+            emit firstImageReady();
+    } else {
+        emit firstImageReady();
+        updateInfoString();
+    }
 }
 
 void Core::rotateLeft() {
@@ -723,8 +750,9 @@ void Core::onFileRenamed(const QString& fromPath, int /*indexFrom*/, const QStri
 void Core::onFileAdded(const QString& filePath) {
     Q_UNUSED(filePath)
     updateInfoString();
+    // ⭐ 与首图/幻灯片一致：异步解码，避免在 GUI 线程同步读盘
     if(model->fileCount() == 1 && state.currentFilePath.isEmpty())
-        loadFileIndex(0, false, settings->usePreloader());
+        loadFileIndex(0, true, settings->usePreloader());
 }
 
 void Core::onFileModified(const QString& filePath) {
@@ -1161,7 +1189,8 @@ void Core::print() {
 
 void Core::scalingRequest(QSize size, ScalingFilter filter) {
     if(mw->isVisible() && state.hasActiveImage) {
-        std::shared_ptr<Image> forScale = model->getImage(state.currentFilePath);
+        // ⭐ 只查缓存：异步加载在途时 resize/滚轮不能在这里同步解码整图
+        std::shared_ptr<Image> forScale = model->cachedImage(state.currentFilePath);
         if(forScale) {
             // GUI 线程快照设置，worker 只读请求对象，不再访问 Settings
             model->scaler->requestScaled(ScalerRequest(forScale, size, state.currentFilePath, filter, settings->smoothUpscaling()));
@@ -1179,6 +1208,8 @@ void Core::reset() {
     editedImageCacheKeys.clear();
     state.hasActiveImage = false;
     state.currentFilePath = "";
+    // 旧图不再对应当前路径：清掉引用，避免扫描/加载空窗期读到上一张的元数据
+    state.currentImg.reset();
     model->setDirectory("");
 }
 
@@ -1188,53 +1219,68 @@ bool Core::loadPath(const QString& path) {
 
     if(path.startsWith("file://", Qt::CaseInsensitive))
         return loadPath(path.mid(7));
-    
+
     const QString& cleanPath = path;
 
     stopSlideshow();
-    state.delayModel = false;
+    // 单文件分支自行管理；目录分支由 openPendingImage() 消费
+    state.pendingOpen = PendingOpen::None;
 
     QFileInfo fileInfo(cleanPath);
 
     if(fileInfo.isDir()) {
+        // ⭐ 目录枚举在 worker 线程：先登记待打开目标，列表就绪后由 onModelLoaded 打开首图。
+        // 顺带修复"以目录作为命令行参数启动时窗口永不显示"：原实现走 isDir 分支
+        // 只 setDirectory 后 return false，从不发 firstImageReady，而 main.cpp
+        // 只在 firstImageReady 里 showGui。
         state.directoryPath = fileInfo.absoluteFilePath();
-    } else if(fileInfo.isFile()) {
-        state.directoryPath = fileInfo.absolutePath();
-        if(model->directoryPath() != state.directoryPath)
-            state.delayModel = true;
-    } else {
+        state.pendingOpen = PendingOpen::First;
+        if(!setDirectory(state.directoryPath)) {
+            state.pendingOpen = PendingOpen::None;
+            return false;
+        }
+        // 该目录已在内存（同一目录重复打开）：不会有 loaded 信号，直接打开
+        if(!model->isScanning())
+            openPendingImage();
+        return true;
+    }
+
+    if(!fileInfo.isFile()) {
         mw->showError(tr("Could not open path: ") + cleanPath);
         qDebug() << "Could not open path:" << cleanPath;
         return false;
     }
 
-    if(!state.delayModel && !setDirectory(state.directoryPath))
+    // load file
+    state.directoryPath = fileInfo.absolutePath();
+    // 目录扫描与目标图解码都是异步的，可并行进行：
+    // 扫描尚未完成时先增量插入目标图（扫描结果随后会覆盖列表）
+    if(!setDirectory(state.directoryPath))
         return false;
 
-    // load file
-    if(fileInfo.isFile()) {
+    {
         const QString absFilePath = fileInfo.absoluteFilePath();
-
         int index = model->indexOfFile(absFilePath);
 
         if(index == -1) {
-            const QStringList types = settings->supportedMimeTypes();
-
-            QMimeDatabase db;
-            const QMimeType type = db.mimeTypeForFile(absFilePath);
-
-            if(types.contains(type.name())) {
-                if(model->forceInsert(absFilePath)) {
-                    index = model->indexOfFile(absFilePath);
-                }
+            // 扫描在 worker 上进行，列表此刻必然为空/未包含目标文件：
+            // 直接按后缀校验增量插入，不再依赖 MIME 兜底（后者会拒绝
+            // 后缀受支持但 MIME 未收录的文件，导致显式打开失败）
+            const QString previous = state.currentFilePath;
+            // insertFile 会同步 emit fileAdded，而 onFileAdded 有"首个文件自动打开"
+            // 分支；先登记当前路径让该分支跳过，统一由本函数随后加载
+            state.currentFilePath = absFilePath;
+            if(!model->insertFile(absFilePath)) {
+                state.currentFilePath = previous;
+                mw->showError(tr("Could not open path: ") + cleanPath);
+                return false;
             }
+            index = model->indexOfFile(absFilePath);
         }
 
         mw->enableDocumentView();
-        return loadFileIndex(index, false, settings->usePreloader());
+        return loadFileIndex(index, true, settings->usePreloader());
     }
-
-    return false;
 }
 
 bool Core::setDirectory(const QString& path) {
@@ -1291,12 +1337,14 @@ void Core::nextDirectory() {
         return;
     const QString next = siblingDirs.nextOfDir(model->directoryPath());
     if(!next.isEmpty()) {
-        if(!setDirectory(next))
+        // ⭐ 列表异步枚举，目标图要等 loaded 后才知道索引（onModelLoaded → openPendingImage）
+        state.pendingOpen = PendingOpen::First;
+        if(!setDirectory(next)) {
+            state.pendingOpen = PendingOpen::None;
             return;
+        }
         QFileInfo fi(next);
         mw->showMessageDirectory(fi.baseName());
-        if(model->fileCount())
-            loadFileIndex(0, false, true);
     } else {
         mw->showMessageDirectoryEnd();
     }
@@ -1310,16 +1358,13 @@ void Core::prevDirectory(bool selectLast) {
         return;
     const QString prev = siblingDirs.prevOfDir(model->directoryPath());
     if(!prev.isEmpty()) {
-        if(!setDirectory(prev))
+        state.pendingOpen = selectLast ? PendingOpen::Last : PendingOpen::First;
+        if(!setDirectory(prev)) {
+            state.pendingOpen = PendingOpen::None;
             return;
+        }
         QFileInfo fi(prev);
         mw->showMessageDirectory(fi.baseName());
-        if(model->fileCount()) {
-            if(selectLast)
-                loadFileIndex(model->fileCount() - 1, false, true);
-            else
-                loadFileIndex(0, false, true);
-        }
     } else {
         mw->showMessageDirectoryStart();
     }
@@ -1382,7 +1427,7 @@ void Core::nextImageSlideshow() {
     if(model->isEmpty())
         return;
     if(shuffle) {
-        loadFileIndex(static_cast<int>(randomizer.next()), false, false);
+        loadFileIndex(static_cast<int>(randomizer.next()), true, false);
     } else {
         int newIndex = model->indexOfFile(state.currentFilePath) + 1;
         if(newIndex >= model->fileCount()) {
@@ -1394,12 +1439,17 @@ void Core::nextImageSlideshow() {
                 return;
             }
         }
-        loadFileIndex(newIndex, false, true);
+        // ⭐ 异步加载：计时器改由 onModelItemReady 在图片就绪后重启。
+        // 若在这里 startSlideshowTimer()，其内部的 getImage() 会对未缓存的下一张
+        // 同步解码，等于把刚才省下的阻塞又加回来
+        loadFileIndex(newIndex, true, true);
     }
-    startSlideshowTimer();
 }
 
 void Core::startSlideshowTimer() {
+    // ⭐ 异步加载中不要兜底同步解码：图片就绪后 onModelItemReady 会再次调用
+    if(!model->isLoaded(state.currentFilePath))
+        return;
     auto img = model->getImage(state.currentFilePath);
     if(!img)
         return;
@@ -1430,8 +1480,16 @@ void Core::jumpToLast() {
 
 void Core::onLoadFailed(const QString &path) {
     mw->showMessage(tr("Load failed: ") + path);
-    if(path == state.currentFilePath)
+    if(path == state.currentFilePath) {
         mw->closeImage();
+        // ⭐ 首图加载失败也要显示窗口：main.cpp 只在 firstImageReady 里 showGui
+        if(!state.hasActiveImage)
+            emit firstImageReady();
+        // ⭐ 幻灯片异步加载失败时没有 onModelItemReady 可依赖：
+        // 直接重启计时，到点后从当前（失败）图前进到下一张，避免整场幻灯片停住
+        if(state.slideshowActive)
+            slideshowTimer.start();
+    }
 }
 
 void Core::onModelItemReady(const std::shared_ptr<Image>& img, const QString &path) {
@@ -1441,18 +1499,10 @@ void Core::onModelItemReady(const std::shared_ptr<Image>& img, const QString &pa
         emit firstImageReady();
         updateInfoString();
 
-        if(state.delayModel) {
-            state.delayModel = false;
-            QTimer::singleShot(40, this, &Core::modelDelayLoad);
-        }
+        // 幻灯片：图片就绪（可能刚异步解码完）后才启动停留计时
+        if(state.slideshowActive)
+            startSlideshowTimer();
     }
-}
-
-void Core::modelDelayLoad() {
-    model->setDirectory(state.directoryPath);
-    mw->setDirectoryPath(state.directoryPath);
-    model->updateImage(state.currentFilePath, state.currentImg);
-    updateInfoString();
 }
 
 void Core::onModelItemUpdated(const QString& filePath) {

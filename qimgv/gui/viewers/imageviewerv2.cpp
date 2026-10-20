@@ -150,6 +150,9 @@ void ImageViewerV2::onDPRChanged()
     zoomThreshold = static_cast<int>(dpr * ZOOM_THRESHOLD_FACTOR);
 
     if (pixmap) {
+        // 缩放帧缓存里存的是带旧 dpr 的 pixmap，换屏后必须整体失效
+        mScaledFrameCache.clear();
+        mScaledFrameSize = QSize();
         pixmap->setDevicePixelRatio(dpr);
         pixmapItem.setPixmap(*pixmap);
         pixmapItem.show();
@@ -236,8 +239,8 @@ void ImageViewerV2::setScalingFilterImpl(ScalingFilter filter)
 
 void ImageViewerV2::setFitModeImpl(ImageFitMode mode)
 {
-    if (scaleTimer->isActive())
-        scaleTimer->stop();
+    // 明确的模式切换：取消去抖中的请求，切完立即算一次
+    scaleTimer->stop();
 
     stopPosAnimation();
     imageFitMode = mode;
@@ -301,8 +304,12 @@ void ImageViewerV2::onFullscreenModeChanged(bool mode)
 // ============================================================================
 void ImageViewerV2::startAnimation()
 {
+    // 显式起播（含用户按播放键）：不再等待首帧就绪，清掉延迟标志
+    mStartAnimationOnFrameReady = false;
     if (movie && movie->frameCount() > 1) {
         stopAnimation();
+        // ⭐ 暂停/切走后预解码会停手，恢复播放时继续在后台顺序解码
+        movie->startDecoding();
         emit animationPaused(false);
         animationTimer->start(movie->nextFrameDelay());
     }
@@ -313,6 +320,9 @@ void ImageViewerV2::stopAnimation()
     if (movie) {
         emit animationPaused(true);
         animationTimer->stop();
+        // ⭐ 暂停只挂起解码任务：保留 reader 与已解码窗口，恢复时无需重解码前缀。
+        // 真正切走/关闭时由 reset() 调 stopDecoding() 让任务退出、让出线程池
+        movie->pauseDecoding();
     }
 }
 
@@ -331,16 +341,39 @@ void ImageViewerV2::onAnimationTimer()
     if (!movie)
         return;
 
-    if (movie->currentFrameNumber() == movie->frameCount() - 1) {
-        if (!loopPlayback) {
-            emit animationPaused(true);
-            emit playbackFinished();
-            return;
-        }
-        movie->jumpToFrame(0);
-    } else {
-        if (!movie->jumpToNextFrame()) {
+    const int last = movie->frameCount() - 1;
+    const int next = (movie->currentFrameNumber() >= last) ? 0 : movie->currentFrameNumber() + 1;
+
+    if (next == 0 && !loopPlayback) {
+        emit animationPaused(true);
+        emit playbackFinished();
+        return;
+    }
+
+    if (!movie->jumpToFrame(next)) {
+        // ⭐ 该帧仍在后台预解码：不阻塞 GUI、也不终止播放，稍后重试；
+        // 预解码已停（缓存到末尾）说明这帧真的取不到，按原逻辑停止
+        if (movie->isDecoding())
+            animationTimer->start(FRAME_PENDING_RETRY_MS);
+        else
             stopAnimation();
+        return;
+    }
+
+    // 缩小播放时直接走已缩放帧流水线，避免每帧全尺寸上传+绘制缩放
+    if (pixmapItem.scale() < 1.0f) {
+        // scaledSizeR() 已是设备像素（= 屏上实际占用的像素），再乘 dpr 会多出 dpr² 倍像素
+        const QSize target = scaledSizeR();
+        if (target.isValid() && !target.isEmpty()) {
+            // ⭐ 直接在 QImage 域缩放到目标尺寸，只对缩小后的产物做 QPixmap 转换：
+            // 全尺寸帧不再每帧转换/上传（4K 动画每帧可省数十 MB 像素拷贝）
+            const auto frameImage = movie->getImage();
+            if (!frameImage)
+                return;
+            // ⭐ 循环播放时同一帧/同一目标尺寸只缩放一次
+            setScaledPixmap(scaledFrameFor(movie->currentFrameNumber(), *frameImage, target));
+            emit frameChanged(movie->currentFrameNumber());
+            animationTimer->start(movie->nextFrameDelay());
             return;
         }
     }
@@ -350,23 +383,39 @@ void ImageViewerV2::onAnimationTimer()
     QPixmap frame = movie->currentPixmap();
     if (frame.isNull())
         return;
-
-    // 缩小播放时直接走已缩放帧流水线，避免每帧全尺寸上传+绘制缩放
-    if (pixmapItem.scale() < 1.0f) {
-        // scaledSizeR() 已是设备像素（= 屏上实际占用的像素），再乘 dpr 会多出 dpr² 倍像素
-        const QSize target = scaledSizeR();
-        if (target.isValid() && !target.isEmpty()) {
-            setScaledPixmap(frame.scaled(target, Qt::KeepAspectRatio, Qt::FastTransformation));
-            emit frameChanged(movie->currentFrameNumber());
-            animationTimer->start(movie->nextFrameDelay());
-            return;
-        }
-    }
-
     updatePixmap(std::move(frame));
 
     emit frameChanged(movie->currentFrameNumber());
     animationTimer->start(movie->nextFrameDelay());
+}
+
+// 缩放帧缓存：按"当前目标尺寸"为键，尺寸变化即整体失效。
+// 目标尺寸通常只在窗口缩放/变焦后变化，因此循环播放几乎不再重复缩放
+QPixmap ImageViewerV2::scaledFrameFor(int frameNumber, const QImage &frame, const QSize &target)
+{
+    if (mScaledFrameSize != target) {
+        mScaledFrameCache.clear();
+        mScaledFrameSize = target;
+    }
+
+    auto it = mScaledFrameCache.find(frameNumber);
+    if (it != mScaledFrameCache.end())
+        return it.value();
+
+    // 缓存按约 32MB 估算上限：目标尺寸越大能缓存的帧越少（4K 全屏只缓 1 帧），
+    // 避免长动画在缩小播放时额外吃掉与全尺寸帧缓存同量级的内存
+    const qsizetype frameBytes = qMax<qsizetype>(1, static_cast<qsizetype>(target.width()) * target.height() * 4);
+    const qsizetype maxFrames = qMax<qsizetype>(1, (static_cast<qsizetype>(32) << 20) / frameBytes);
+    if (mScaledFrameCache.size() >= maxFrames)
+        mScaledFrameCache.clear();
+
+    QPixmap scaled = QPixmap::fromImage(frame.scaled(target, Qt::KeepAspectRatio,
+                                                      Qt::FastTransformation));
+    // 缓存里就带好 dpr：setScaledPixmap() 再设置同值会提前返回，
+    // 避免隐式共享的 pixmap 因修改 dpr 而每帧深拷贝一份像素
+    scaled.setDevicePixelRatio(dpr);
+    mScaledFrameCache.insert(frameNumber, scaled);
+    return scaled;
 }
 
 void ImageViewerV2::nextFrame()
@@ -391,18 +440,45 @@ void ImageViewerV2::prevFrame()
 
 bool ImageViewerV2::showAnimationFrame(int frame)
 {
-    if (!movie || frame < 0 || frame >= movie->frameCount())
+    if (!movie || frame < 0)
+        return false;
+    // frameCount() 为 0 表示帧数未知（可读动画），此时不能把第 0 帧判为越界
+    const int count = movie->frameCount();
+    if (count > 0 && frame >= count)
         return false;
 
-    if (movie->currentFrameNumber() == frame)
+    if (movie->currentFrameNumber() == frame) {
+        if (mStartAnimationOnFrameReady) {
+            mStartAnimationOnFrameReady = false;
+            startAnimation();
+        }
         return true;
+    }
 
-    if (!movie->jumpToFrame(frame))
+    if (!movie->jumpToFrame(frame)) {
+        // ⭐ 逐帧浏览/暂停期间预解码可能已停手：先唤醒后台解码。
+        // 已到末尾时 startDecoding() 不会启动新任务，此时缺帧就是真不可用。
+        movie->startDecoding();
+        // ⭐ 该帧还在后台解码：稍后再试一次（一次性定时器，不阻塞 GUI）；
+        // 捕获动画实例：重试前若已切到别的动画，帧号相同也不能误用
+        if (movie->isDecoding()) {
+            const std::shared_ptr<ImageAnimated> animation = movie;
+            QTimer::singleShot(FRAME_PENDING_RETRY_MS, this, [this, frame, animation]() {
+                if (movie == animation && movie->currentFrameNumber() != frame)
+                    showAnimationFrame(frame);
+            });
+        }
         return false;
+    }
 
     emit frameChanged(movie->currentFrameNumber());
     // 使用移动语义传递临时对象，避免拷贝
     updatePixmap(movie->currentPixmap());
+    // 切回动画时首帧已就绪：现在才开始播放计时，避免计时器从旧播放头抢跑
+    if (mStartAnimationOnFrameReady) {
+        mStartAnimationOnFrameReady = false;
+        startAnimation();
+    }
     return true;
 }
 
@@ -444,6 +520,8 @@ void ImageViewerV2::showAnimation(const std::shared_ptr<ImageAnimated>& animatio
 
     reset();
     movie = animation;
+    // ⭐ 后续帧由 startAnimation() 启动后台预解码：GUI 线程不再同步 read()，
+    // 帧未就绪时由 onAnimationTimer/showAnimationFrame 稍后重试
     movie->jumpToFrame(0);
 
     Qt::TransformationMode mode = smoothAnimatedImages ? Qt::SmoothTransformation : Qt::FastTransformation;
@@ -458,7 +536,15 @@ void ImageViewerV2::showAnimation(const std::shared_ptr<ImageAnimated>& animatio
 
     applyInitialFit();
 
-    startAnimation();
+    if (movie->currentFrameNumber() == 0) {
+        startAnimation();
+    } else {
+        // 环形缓冲可能已回收首帧（例如切走再切回动画）：先等后台解出首帧，
+        // 由 showAnimationFrame 的重试在首帧就绪后启动播放。
+        // 不能先启动计时器：它会按切走前的播放头继续请求后续帧，与首帧请求互相覆盖
+        mStartAnimationOnFrameReady = true;
+        showAnimationFrame(0);
+    }
 }
 
 void ImageViewerV2::showImage(const QPixmap& newPixmap)
@@ -500,6 +586,9 @@ void ImageViewerV2::showImageImpl(QPixmap pixmapParam)
 void ImageViewerV2::reset()
 {
     stopPosAnimation();
+    // 缩放帧缓存按"当前动画 + 目标尺寸"有效，动画一变即失效
+    mScaledFrameCache.clear();
+    mScaledFrameSize = QSize();
     pixmapItemScaled.setPixmap(QPixmap());
     pixmapScaled = QPixmap();
     pixmapItem.setPixmap(QPixmap());
@@ -507,6 +596,11 @@ void ImageViewerV2::reset()
     pixmapItem.setOffset(CENTER_OFFSET, CENTER_OFFSET);
     pixmap.reset();
     stopAnimation();
+    // 暂停只是挂起任务（保留 reader）；切走必须真正退出任务，
+    // 否则单线程池会被挂起的任务占住，下一个动画永远排不到
+    if (movie)
+        movie->stopDecoding();
+    mStartAnimationOnFrameReady = false;
     movie = nullptr;
     centerOn(CENTER_OFFSET, CENTER_OFFSET);
     viewport()->update();
@@ -860,7 +954,15 @@ void ImageViewerV2::zoomAnchored(float newScale)
     // 锚点保持 + 边缘钳制合并为一次 centerOn（原实现由调用方再调 adjustViewport）
     centerOn(clampViewportCenter(sceneCenter - diff));
 
-    requestScaling();
+    // ⭐ 交互变焦（滚轮/触控板/拖动）连续触发：这里只重排去抖定时器，
+    // 停顿 80ms 后才请求一次缩放。期间视图用 item 自身的缩放做近似显示，
+    // 不必为每一个中间缩放比例白算一整张图
+    scheduleScaling();
+}
+
+void ImageViewerV2::scheduleScaling()
+{
+    scaleTimer->start();
 }
 
 void ImageViewerV2::doZoom(float newScale, bool center)
@@ -1495,9 +1597,7 @@ void ImageViewerV2::resizeEvent(QResizeEvent* event)
 
         update();
 
-        if (scaleTimer->isActive())
-            scaleTimer->stop();
-        scaleTimer->start();
+        scheduleScaling();
 
         saveViewportPos();
     }

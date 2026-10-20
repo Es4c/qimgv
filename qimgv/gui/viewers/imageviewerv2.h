@@ -3,11 +3,13 @@
 #include <QGraphicsView>
 #include <QGraphicsScene>
 #include <QGraphicsPixmapItem>
+#include <QImage>
 #include <QElapsedTimer>
 #include <QWheelEvent>
 #include <QPropertyAnimation>
 #include <QScrollBar>
 #include <QColor>
+#include <QHash>
 #include <QTimer>
 #include <memory>
 #include "settings.h"
@@ -137,6 +139,9 @@ private:
     std::unique_ptr<QPixmap> pixmap;
     QPixmap pixmapScaled;
     std::shared_ptr<ImageAnimated> movie;
+    // 缩放帧缓存：键为帧号，仅在 mScaledFrameSize 匹配时有效
+    QHash<int, QPixmap> mScaledFrameCache;
+    QSize mScaledFrameSize;
     QGraphicsPixmapItem pixmapItem;
     QGraphicsPixmapItem pixmapItemScaled;
     QPixmap checkboard;
@@ -164,6 +169,9 @@ private:
     bool loopPlayback;
     bool mIsFullscreen;
     bool scrollBarWorkaround;
+    // 切回动画时首帧可能已被环形缓冲回收：等首帧解码出来再启动播放计时器，
+    // 避免计时器按旧播放头继续请求、与首帧请求互相覆盖
+    bool mStartAnimationOnFrameReady = false;
     bool mSilentScaleChange = false;   // 非交互缩放期间置 true，scaleChanged 带上标记
     bool useFixedZoomLevels;
     bool trackpadDetection;
@@ -197,6 +205,8 @@ private:
     static constexpr int ANIMATION_SPEED = 150;
     static constexpr float FAST_SCALE_THRESHOLD = 1.0f;
     static constexpr int LARGE_VIEWPORT_SIZE = 2073600;
+    // 后台预解码尚未产出目标帧时的重试间隔
+    static constexpr int FRAME_PENDING_RETRY_MS = 10;
 
     static constexpr int SCENE_SIZE = 200000;
     static constexpr int CENTER_OFFSET = 10000;
@@ -215,8 +225,13 @@ private:
 
     void adjustZoom(bool zoomIn, bool atCursor);
     void zoomAnchored(float newScale);
+    // 去抖请求缩放：交互变焦连续触发时只在停顿后算一次（scaleTimer, 80ms）
+    void scheduleScaling();
     void doZoom(float newScale, bool center = true);
     void setZoomAnchor(QPoint viewportPos);
+
+    // 动画缩小播放的缩放帧缓存（按目标尺寸整体失效，容量按内存上限自清）
+    QPixmap scaledFrameFor(int frameNumber, const QImage &frame, const QSize &target);
 
     void fitNormal();
     void fitWidth();

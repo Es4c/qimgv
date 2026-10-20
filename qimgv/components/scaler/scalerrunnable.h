@@ -18,13 +18,13 @@ public:
     void run() override;
 
 signals:
-    // ✅ 仍然值传递（小对象，没问题）
-    void started(ScalerRequest req);
-
     // ✅ worker 线程直接产出 QPixmap（隐式共享），UI 线程零深拷贝
     void finished(QPixmap scaled, ScalerRequest req);
 
 private:
+    // 请求是否已被更新的一代取代（阶段边界自检）
+    bool outdated() const;
+
     ScalerRequest m_request;
     std::atomic<quint64>* m_generation;
 };

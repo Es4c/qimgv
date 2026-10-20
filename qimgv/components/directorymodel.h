@@ -21,11 +21,15 @@ public:
     const QString &fileNameAt(int index) const;
     bool containsFile(const QString &filePath) const;
     bool isEmpty() const;
+    // 目录枚举在 worker 线程进行：true 表示当前目录列表尚未就绪（loaded 未发出）
+    bool isScanning() const;
     const QString &nextOf(const QString &filePath) const;
     const QString &prevOf(const QString &filePath) const;
     const QString &firstFile() const;
     const QString &lastFile() const;
     bool forceInsert(const QString &filePath);
+    // 后缀校验后增量插入（用于显式打开不在当前列表中的文件）；内部会 emit fileAdded
+    bool insertFile(const QString &filePath);
     void copyFileTo(const QString &srcFile, const QString &destDirPath, bool force, FileOpResult &result);
     void moveFileTo(const QString &srcFile, const QString &destDirPath, bool force, FileOpResult &result);
     void renameEntry(const QString &oldFilePath, const QString &newName, bool force, FileOpResult &result);
@@ -36,6 +40,8 @@ public:
     bool loaderBusy() const;
     std::shared_ptr<Image> getImageAt(int index);
     std::shared_ptr<Image> getImage(const QString &filePath);
+    // 仅查缓存，绝不触发解码（GUI 线程 resize/滚轮等高频路径使用）
+    std::shared_ptr<Image> cachedImage(const QString &filePath);
     void updateImage(const QString &filePath, const std::shared_ptr<Image> &img);
     void setSortingMode(SortingMode mode);
     SortingMode sortingMode() const;
