@@ -38,7 +38,7 @@ struct ImageAnimated::DecodeContext {
     std::atomic<int> playhead{0};       // 当前播放帧号
     std::atomic<int> requestedFrame{-1}; // 随机跳转请求（-1 = 无）
     std::atomic<int> reportedFrameCount{0}; // imageCount() 的扫描值，EOF 时用于修正
-    std::atomic<int> correctedFrameCount{0}; // EOF 后修正的总帧数
+    std::atomic<int> correctedFrameCount{-1}; // EOF 后修正的总帧数（-1 = 尚未修正）
 
     // 调用方必须持有 mutex
     bool frameAtLocked(int index, std::shared_ptr<const QImage> &out,
@@ -86,21 +86,67 @@ qsizetype frameBytes(const ImageAnimated::DecodeContext::CachedFrame &frame) {
 
 using FrameDeque = std::deque<ImageAnimated::DecodeContext::CachedFrame>;
 
+// 前缀定位/单帧读取期间的任务有效性：停止、暂停或有不同的新定位请求时，
+// 当前任务的结果都不应再写入窗口。read() 之前和之后都必须复查。
+// activeTarget 是本次正在补齐的帧号：GUI 的重试定时器会反复提交同一个目标，
+// 把"目标相同"的请求当成新请求会让长动画的前缀定位反复重启（永远追不上）。
+bool decodeCancelled(const ImageAnimated::DecodeContext &ctx, int activeTarget) {
+    if (ctx.shutdown.load(std::memory_order_acquire)
+        || !ctx.wantMore.load(std::memory_order_acquire))
+        return true;
+    const int requested = ctx.requestedFrame.load(std::memory_order_acquire);
+    return requested >= 0 && requested != activeTarget;
+}
+
+enum class PrefixOpenStatus {
+    Ready,
+    Cancelled,   // 任务已过期，必须丢弃 reader 与本次定位结果
+    EndOfFile    // 正常读到文件末尾，可按实际帧数修正
+};
+
+struct PrefixOpenResult {
+    std::unique_ptr<QImageReader> reader;
+    PrefixOpenStatus status = PrefixOpenStatus::Ready;
+    int decoded = 0;   // EndOfFile 时实际成功读出的帧数
+};
+
 // 在调用线程内新建 reader，并顺序解码丢弃前 frameIndex 帧。
 // reader 必须由实际执行 read() 的线程创建/销毁（内部持有 QFile），
 // 因此 DecodeContext 不保存 reader；任务重启时按已解码帧号重新定位。
 // 注：Qt 的动画 handler（GIF/WebP 等）不实现 jumpToImage（默认返回 false），
 // 且 WebP 的探测会 readAll() 整个文件，因此不做"先试随机寻址"的探测，
 // 顺序丢弃是唯一可行的定位方式。
-std::unique_ptr<QImageReader> openReaderAt(const QString &path, int frameIndex,
-                                           int allocationLimitMB) {
-    auto reader = std::make_unique<QImageReader>(path);
-    reader->setAllocationLimit(allocationLimitMB);
+//
+// 长动画的前缀定位可能持续数秒：每帧 read() 之间都检查取消状态，
+// 不能让它占住单线程解码池去追一个已经过期的跳转目标。
+PrefixOpenResult openReaderAt(const QString &path, int frameIndex,
+                              int allocationLimitMB, int activeTarget,
+                              const ImageAnimated::DecodeContext &ctx) {
+    PrefixOpenResult result;
+    result.reader = std::make_unique<QImageReader>(path);
+    result.reader->setAllocationLimit(allocationLimitMB);
+
     for (int i = 0; i < frameIndex; ++i) {
-        if (reader->read().isNull())
-            break;
+        if (decodeCancelled(ctx, activeTarget)) {
+            result.reader.reset();
+            result.status = PrefixOpenStatus::Cancelled;
+            return result;
+        }
+        if (result.reader->read().isNull()) {
+            // 这是真实 EOF，不是取消：调用方可据此修正帧数
+            result.status = PrefixOpenStatus::EndOfFile;
+            result.decoded = i;
+            return result;
+        }
+        result.decoded = i + 1;
     }
-    return reader;
+
+    // 前缀读完到返回之间仍可能有停止/暂停/不同目标的新跳转到达
+    if (decodeCancelled(ctx, activeTarget)) {
+        result.reader.reset();
+        result.status = PrefixOpenStatus::Cancelled;
+    }
+    return result;
 }
 
 // 清空环形窗口（调用方持锁）：待释放帧移入 doomed，由调用方在锁外析构，
@@ -110,6 +156,27 @@ void detachAllFramesLocked(ImageAnimated::DecodeContext &ctx, FrameDeque &doomed
         doomed.push_back(std::move(frame));
     ctx.frames.clear();
     ctx.cachedBytes = 0;
+}
+
+// 停止后回收整个帧窗口，并让 reader 状态与空窗口保持一致：
+// 下次启动会从 0 重建 reader。correctedFrameCount 保留（真实帧数仍有效），
+// 当前显示帧由 ImageAnimated::cachedFrame 持有。
+void resetWindowLocked(ImageAnimated::DecodeContext &ctx, FrameDeque &doomed) {
+    detachAllFramesLocked(ctx, doomed);
+    ctx.nextIndex = 0;
+    ctx.exhausted = false;
+}
+
+// 文件在两次打开之间变短时，窗口尾部可能留下 index >= endIndex 的旧帧。
+// 保持 [front().index, nextIndex) 的连续窗口不变式，否则后续 read() 会以
+// nextIndex 为序号追加，和残留帧产生重复/乱序。
+void trimWindowEndLocked(ImageAnimated::DecodeContext &ctx, int endIndex,
+                         FrameDeque &doomed) {
+    while (!ctx.frames.empty() && ctx.frames.back().index >= endIndex) {
+        ctx.cachedBytes -= frameBytes(ctx.frames.back());
+        doomed.push_back(std::move(ctx.frames.back()));
+        ctx.frames.pop_back();
+    }
 }
 
 void trimLocked(ImageAnimated::DecodeContext &ctx, int playhead, FrameDeque &doomed) {
@@ -201,7 +268,12 @@ public:
                 }
 
                 if (target < 0) {
-                    // 停止/析构：先让出 running，再复查 wantMore/shutdown。
+                    // 停止/析构：任务确实退出时回收不再参加播放的窗口。
+                    // 若 stopDecoding() 之后又 startDecoding()，这里会看到
+                    // shutdown=false 并原地复活，不会误清正在复用的窗口。
+                    if (ctx.shutdown.load(std::memory_order_acquire))
+                        resetWindowLocked(ctx, doomed);
+                    // 先让出 running，再复查 wantMore/shutdown。
                     // startDecoding() 与本段共用 mutex，要么看到 running=false 自己启动，
                     // 要么这里看到 wantMore=true 原地续跑，不会丢失唤醒
                     ctx.running.store(false, std::memory_order_release);
@@ -213,11 +285,8 @@ public:
                     break;
                 }
 
-                if (needsRewind) {
-                    detachAllFramesLocked(ctx, doomed);
-                    ctx.nextIndex = 0;
-                    ctx.exhausted = false;
-                }
+                if (needsRewind)
+                    resetWindowLocked(ctx, doomed);
                 decodeFrom = ctx.nextIndex;
             }
 
@@ -226,14 +295,73 @@ public:
 
             // reader 只在需要时创建；回绕必须从 0 重建（Qt 动画 handler 无法随机寻址）。
             // 新建 reader 在锁外：顺序丢弃前缀可能耗时，不能阻塞 GUI 的 frameAt()/jumpToFrame()
-            if (!reader || needsRewind)
-                reader = openReaderAt(ctx.path, decodeFrom, ctx.allocationLimitMB);
+            if (!reader || needsRewind) {
+                reader.reset();
+                PrefixOpenResult opened = openReaderAt(ctx.path, decodeFrom,
+                                                       ctx.allocationLimitMB, target, ctx);
+                if (opened.status == PrefixOpenStatus::Cancelled) {
+                    // 取消的前缀不是 EOF、也不是真实帧数修正：丢掉 reader，
+                    // 回到状态机重新读取最新的 requestedFrame/playhead
+                    reader.reset();
+                    continue;
+                }
+                reader = std::move(opened.reader);
+
+                if (opened.status == PrefixOpenStatus::EndOfFile) {
+                    // 重新打开后文件比 ctx.nextIndex 记录的更短：这是真实 EOF，
+                    // 按实际读出的前缀帧数修正（取消不会走到这里）
+                    QMutexLocker locker(&ctx.mutex);
+                    if (ctx.shutdown.load(std::memory_order_acquire)) {
+                        resetWindowLocked(ctx, doomed);
+                        ctx.running.store(false, std::memory_order_release);
+                        break;
+                    }
+                    ctx.exhausted = true;
+                    const int decoded = qMin(ctx.nextIndex, opened.decoded);
+                    trimWindowEndLocked(ctx, decoded, doomed);
+                    ctx.nextIndex = decoded;
+                    const int reported =
+                        ctx.reportedFrameCount.load(std::memory_order_relaxed);
+                    ctx.correctedFrameCount.store(
+                        reported > 0 ? qMin(decoded, reported) : decoded,
+                        std::memory_order_release);
+                    ctx.running.store(false, std::memory_order_release);
+                    // 与单帧 read() 的 EOF 路径一致：若挂起的跳转仍落在实际帧数内，
+                    // 保持任务存活，下一轮从 0 回绕重解码
+                    const int requested = ctx.requestedFrame.load(std::memory_order_acquire);
+                    if (ctx.wantMore.load(std::memory_order_acquire)
+                        && !ctx.shutdown.load(std::memory_order_acquire)
+                        && requested >= 0 && requested < decoded) {
+                        ctx.running.store(true, std::memory_order_release);
+                        continue;
+                    }
+                    // 超出真实帧数的请求永远无法满足，清掉避免恢复时做一次
+                    // 无意义的前缀定位（jumpToFrame 之后也会拒绝该帧号）
+                    if (requested >= decoded)
+                        ctx.requestedFrame.store(-1, std::memory_order_release);
+                    break;
+                }
+            }
+
+            // 前缀可能刚完成就遇到停止/暂停/换目标：本轮不 read()，回到状态机
+            // 重新判断。reader 与 nextIndex 仍然对齐：暂停可原样保留，换目标时
+            // 若需回绕会由上面的 needsRewind 分支丢弃重建。
+            if (decodeCancelled(ctx, target))
+                continue;
 
             // reader 独占于本任务，read() 在锁外：GUI 线程读缓存不会被解码阻塞
             QImage img = reader->read();
             const int delay = img.isNull() ? 0 : qMax(10, reader->nextImageDelay());
 
             QMutexLocker locker(&ctx.mutex);
+            if (ctx.shutdown.load(std::memory_order_acquire)) {
+                // 读取期间到达的停止请求：丢弃这一帧并回收整个窗口。
+                // 停止后不得再把新帧写入缓存；大 QImage 在锁外析构。
+                resetWindowLocked(ctx, doomed);
+                ctx.running.store(false, std::memory_order_release);
+                break;
+            }
+
             if (img.isNull()) {
                 // 实际帧数可能少于 imageCount() 的扫描值（损坏/截断的动画）；
                 // imageCount() 未知（<=0）时以实际解出的帧数为准。
@@ -256,9 +384,14 @@ public:
                     ctx.running.store(true, std::memory_order_release);
                     continue;
                 }
+                // 超出真实帧数的请求永远无法满足，清掉避免恢复时白做前缀定位
+                if (requested >= decoded)
+                    ctx.requestedFrame.store(-1, std::memory_order_release);
                 break;
             }
 
+            // 顺序帧始终与 nextIndex/reader 位置一致，即使 read() 期间来了新跳转，
+            // 发布它也不会错位；下一轮再消费 requestedFrame。停止请求已在上方拦截。
             const int index = ctx.nextIndex;
             auto frame = std::make_shared<const QImage>(std::move(img));
             ctx.cachedBytes += frame->sizeInBytes();
@@ -367,7 +500,7 @@ int ImageAnimated::frameCount() const {
         return 0;
     // EOF 后使用修正值（reportedFrameCount 未知时等于实际解码帧数）
     const int corrected = mCtx->correctedFrameCount.load(std::memory_order_acquire);
-    if (corrected > 0)
+    if (corrected >= 0)
         return corrected;
     return mFrameCount.load(std::memory_order_relaxed);
 }
@@ -384,12 +517,9 @@ int ImageAnimated::nextFrameDelay() const {
 }
 
 bool ImageAnimated::isValid() const {
-    // 有效 = 至少解出第 0 帧；imageCount() 返回 0/-1（帧数未知）时也能显示，
-    // 不再要求扫描帧数 > 0（旧实现此处会把可读但帧数未知的 WebP/AVIF 判死为空白）
-    if (!mCtx)
-        return false;
-    QMutexLocker locker(&mCtx->mutex);
-    return !mCtx->frames.empty();
+    // mCtx 只在首帧成功解码后才会赋值。停止时帧窗口会被回收，但动画本身仍有效：
+    // 切回时由后台重新解码首帧，不能因为窗口为空就拒绝显示。
+    return mCtx != nullptr;
 }
 
 // 已解码帧（不触发解码）；未就绪返回 nullptr
@@ -431,7 +561,7 @@ bool ImageAnimated::jumpToFrame(int frameNumber) {
         // 外层检查与取锁之间解码任务可能刚到达 EOF 并发布修正帧数：
         // 在锁内复查一次，避免为不存在的帧启动一次昂贵的顺序前缀定位
         const int corrected = mCtx->correctedFrameCount.load(std::memory_order_acquire);
-        if (corrected > 0 && frameNumber >= corrected)
+        if (corrected >= 0 && frameNumber >= corrected)
             return false;
         if (!mCtx->frameAtLocked(frameNumber, frame, &frameDelay)) {
             // 请求后台补齐；播放头同步前移，前瞻窗口随之移动
@@ -517,10 +647,20 @@ void ImageAnimated::pauseDecoding() {
 void ImageAnimated::stopDecoding() {
     if (!mCtx)
         return;
-    QMutexLocker locker(&mCtx->mutex);
-    mCtx->wantMore.store(false, std::memory_order_relaxed);
-    mCtx->shutdown.store(true, std::memory_order_relaxed);
-    mCtx->wake.wakeAll();
+
+    FrameDeque doomed;   // 在锁外析构，避免大 QImage 释放阻塞 GUI/长时间持锁
+    {
+        QMutexLocker locker(&mCtx->mutex);
+        mCtx->wantMore.store(false, std::memory_order_relaxed);
+        mCtx->shutdown.store(true, std::memory_order_relaxed);
+        mCtx->wake.wakeAll();
+
+        // 没有解码任务在跑：其发布路径已经退出临界区，不会再写 frames，
+        // 可以安全地立即回收窗口（large QImage 在锁外释放）。
+        // 有任务在跑：由任务在实际退出前完成同样的清理，GUI 绝不等待 worker。
+        if (!mCtx->running.load(std::memory_order_acquire))
+            resetWindowLocked(*mCtx, doomed);
+    }
 }
 
 bool ImageAnimated::isDecoding() const {

@@ -2,11 +2,54 @@
 #include <QSettings>
 #include <QMimeData>
 #include <QCryptographicHash>
+#include <QDir>
 #include <vector>
 
 #ifdef __WIN32
 #include <tchar.h>
 #endif
+
+namespace {
+// 目录扫描完成后，模型里保存的是枚举得到的实际路径；用户传入的路径在 Windows 上
+// 可能只有大小写不同。indexOfFile() 是精确哈希查找，这里在精确查找失败时按平台
+// 规则回退一次，返回模型内实际路径，保证后续 nextOf/prevOf/indexOfFile 可用。
+int findModelFileIndex(const DirectoryModel &model, const QString &path,
+                       QString *actualPath)
+{
+    const int exact = model.indexOfFile(path);
+    if (exact >= 0) {
+        if (actualPath)
+            *actualPath = model.filePathAt(exact);
+        return exact;
+    }
+
+#if defined(Q_OS_WIN)
+    const QString target = QDir::cleanPath(path);
+    const int count = model.fileCount();
+    for (int i = 0; i < count; ++i) {
+        if (QDir::cleanPath(model.filePathAt(i)).compare(target, Qt::CaseInsensitive) == 0) {
+            if (actualPath)
+                *actualPath = model.filePathAt(i);
+            return i;
+        }
+    }
+#endif
+    return -1;
+}
+
+// 重新锚定后 state.currentFilePath 用的是目录枚举路径；仍在途的异步加载/
+// 缩放结果携带的是用户传入路径（Windows 上可能只有大小写不同）。这些回调
+// 必须按平台规则比较，否则重新锚定反而会让当前图永远装不上。
+bool sameFile(const QString &a, const QString &b)
+{
+#if defined(Q_OS_WIN)
+    // 同时容忍分隔符差异（QFileInfo 与目录枚举在 Windows 上都可能给出 / 或 \）
+    return QDir::cleanPath(a).compare(QDir::cleanPath(b), Qt::CaseInsensitive) == 0;
+#else
+    return a == b;
+#endif
+}
+} // namespace
 
 Core::Core()
         : loopSlideshow(false),
@@ -308,17 +351,35 @@ void Core::syncRandomizer() {
 }
 
 void Core::onModelLoaded() {
-    if(shuffle)
-        syncRandomizer();
-
     if(state.pendingOpen != PendingOpen::None) {
+        if(shuffle)
+            syncRandomizer();
         openPendingImage();
         return;
     }
 
-    // 目录枚举在 worker 线程，扫描完成只重建「路径 → 索引」映射与文件数；
-    // 图片缓存按路径键控，与索引无关，这里不必（也不能）重新挂载当前图：
-    // 扫描可能在用户已经开始缩放/平移之后才结束，重挂会重置视图
+    // 扫描完成会以目录枚举得到的路径重建列表：用户传入路径可能只有大小写不同。
+    // 重新锚定到模型中的实际路径（不重新加载/重装当前图，也不触碰视图状态），
+    // 否则 indexOfFile/nextOf/prevOf 会因精确匹配失败而无法翻页。
+    // 注：图片缓存仍以最初加载路径为键，重锚定后依赖精确缓存键的操作可能回退为重新解码。
+    QString actualPath;
+    const int currentIndex = state.currentFilePath.isEmpty()
+        ? -1
+        : findModelFileIndex(*model, state.currentFilePath, &actualPath);
+
+    if(currentIndex >= 0)
+        state.currentFilePath = actualPath;
+
+    if(shuffle)
+        syncRandomizer();
+
+    // 首次打开时扫描尚未完成，loadFileIndex() 看到的邻图为空。
+    // 列表就绪后补一次预加载；loader 按路径去重，重扫/排序不会重复提交任务。
+    if(currentIndex >= 0 && settings->usePreloader()) {
+        model->preload(model->nextOf(actualPath));
+        model->preload(model->prevOf(actualPath));
+    }
+
     updateInfoString();
 }
 
@@ -1202,7 +1263,7 @@ void Core::scalingRequest(QSize size, ScalingFilter filter) {
 }
 
 void Core::onScalingFinished(const QPixmap& scaled, const ScalerRequest& req) {
-    if (state.hasActiveImage && req.pathRef() == state.currentFilePath) {
+    if (state.hasActiveImage && sameFile(req.pathRef(), state.currentFilePath)) {
         mw->onScalingFinished(scaled); 
     }
 }
@@ -1483,7 +1544,7 @@ void Core::jumpToLast() {
 
 void Core::onLoadFailed(const QString &path) {
     mw->showMessage(tr("Load failed: ") + path);
-    if(path == state.currentFilePath) {
+    if(sameFile(path, state.currentFilePath)) {
         mw->closeImage();
         // ⭐ 首图加载失败也要显示窗口：main.cpp 只在 firstImageReady 里 showGui
         if(!state.hasActiveImage)
@@ -1496,7 +1557,7 @@ void Core::onLoadFailed(const QString &path) {
 }
 
 void Core::onModelItemReady(const std::shared_ptr<Image>& img, const QString &path) {
-    if(path == state.currentFilePath) {
+    if(sameFile(path, state.currentFilePath)) {
         state.currentImg = img;
         guiSetImage(img);
         emit firstImageReady();
@@ -1509,7 +1570,7 @@ void Core::onModelItemReady(const std::shared_ptr<Image>& img, const QString &pa
 }
 
 void Core::onModelItemUpdated(const QString& filePath) {
-    if(filePath == state.currentFilePath) {
+    if(sameFile(filePath, state.currentFilePath)) {
         guiSetImage(model->getImage(filePath));
         updateInfoString();
     }

@@ -10,6 +10,7 @@
 #include <QScrollBar>
 #include <QColor>
 #include <QHash>
+#include <QList>
 #include <QTimer>
 #include <memory>
 #include "settings.h"
@@ -139,8 +140,10 @@ private:
     std::unique_ptr<QPixmap> pixmap;
     QPixmap pixmapScaled;
     std::shared_ptr<ImageAnimated> movie;
-    // 缩放帧缓存：键为帧号，仅在 mScaledFrameSize 匹配时有效
+    // 缩放帧缓存：键为帧号，仅在 mScaledFrameSize 匹配时有效。
+    // mScaledFrameOrder 维护 LRU（front 最旧、back 最新），与 hash 的键集合保持一致。
     QHash<int, QPixmap> mScaledFrameCache;
+    QList<int> mScaledFrameOrder;
     QSize mScaledFrameSize;
     QGraphicsPixmapItem pixmapItem;
     QGraphicsPixmapItem pixmapItemScaled;
@@ -230,8 +233,9 @@ private:
     void doZoom(float newScale, bool center = true);
     void setZoomAnchor(QPoint viewportPos);
 
-    // 动画缩小播放的缩放帧缓存（按目标尺寸整体失效，容量按内存上限自清）
+    // 动画缩小播放的缩放帧缓存（按目标尺寸整体失效，容量按内存预算做有界 LRU）
     QPixmap scaledFrameFor(int frameNumber, const QImage &frame, const QSize &target);
+    void clearScaledFrameCache();
 
     void fitNormal();
     void fitWidth();

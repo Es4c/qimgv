@@ -37,7 +37,8 @@ public:
     // false（不阻塞）。三者分工：
     //   startDecoding(): 恢复/确保解码任务运行
     //   pauseDecoding(): 暂停推进（保留 reader 与已解码窗口，恢复无需重解码前缀）
-    //   stopDecoding():  让解码任务退出（切走/关闭时调用，及时让出线程池）
+    //   stopDecoding():  让解码任务退出（切走/关闭时调用，及时让出线程池）；
+    //                    任务真正停止后回收帧窗口，不阻塞 GUI
     void startDecoding();
     void pauseDecoding();
     void stopDecoding();
