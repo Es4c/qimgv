@@ -351,7 +351,7 @@ void WindowsWorker::run() {
     networkBufferCapped = false;
 
     QString currentPath;
-    bool healthy = ensureInitialHandle(currentPath) && armRead(currentPath);
+    const bool healthy = ensureInitialHandle(currentPath) && armRead(currentPath);
     if (!healthy) {
         setReadyPath(QString());
         if (isRunning.load(std::memory_order_acquire))
@@ -380,14 +380,12 @@ void WindowsWorker::run() {
                 setReadyPath(QString());
                 if (isRunning.load(std::memory_order_acquire))
                     emit watchPathFailed(currentPath);
-                healthy = false;
                 break;
             }
             if(!armRead(currentPath)) {
                 setReadyPath(QString());
                 if (isRunning.load(std::memory_order_acquire))
                     emit watchPathFailed(currentPath);
-                healthy = false;
                 break;
             }
             continue;
@@ -399,7 +397,6 @@ void WindowsWorker::run() {
                 setReadyPath(QString());
                 if (isRunning.load(std::memory_order_acquire))
                     emit watchPathFailed(currentPath);
-                healthy = false;
                 break;
             }
         }

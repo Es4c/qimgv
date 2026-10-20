@@ -100,7 +100,7 @@ bool WindowsWatcher::isWatchPathReady(const QString &path) const
 {
     Q_D(const WindowsWatcher);
     const auto *windowsWorker =
-        static_cast<const WindowsWorker*>(d->worker.constData());
+        static_cast<const WindowsWorker*>(d->worker.data());
     return windowsWorker && windowsWorker->isWatchPathReady(path);
 }
 
