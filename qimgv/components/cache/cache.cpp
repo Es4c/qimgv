@@ -65,33 +65,43 @@ std::shared_ptr<Image> Cache::take(const QString &path) {
 }
 
 bool Cache::rekey(const QString &oldPath, const QString &newPath) {
-    if(oldPath == newPath)
-        return true;
     if(newPath.isEmpty())
         return false;
+    if(oldPath == newPath)
+        return true;
 
     std::unique_lock lock(mRWLock);
     auto it = items.find(oldPath);
     if(it == items.end())
         return false;
 
+    // 链表节点就地改键（迭代器在 erase/insert 之间保持有效），LRU 位置不变
+    ListIt node = it.value();
+    const size_t bytes = node->bytes;
+
     auto existing = items.find(newPath);
-    if(existing != items.end()) {
-        // 新键已被占用：只有"同一对象"才能安全合并（同一文件被两种拼写加载过），
-        // 否则两个不同对象会互相覆盖，保留原状交给调用方取舍
-        if(existing.value()->item != it.value()->item)
-            return false;
-        mCurrentBytes -= it.value()->bytes;
-        lruList.erase(it.value());
+    if(existing == items.end()) {
         items.erase(it);
+        node->key = newPath;
+        items.insert(newPath, node);
         return true;
     }
 
-    // 链表节点就地改键（迭代器在 erase/insert 之间保持有效），LRU 位置不变
-    ListIt node = it.value();
+    // 新键已被占用。若只是同一对象的另一种拼写（别名），直接丢旧键；
+    // 若是另一对象（同一文件的另一次加载/预加载），以被改键的对象为准覆盖 ——
+    // 调用方要锚定的正是它，保留目标对象会让 cachedImage(newPath) 返回另一份像素。
+    ListIt target = existing.value();
+    if(target->item != node->item) {
+        mCurrentBytes -= target->bytes;
+        target->item = std::move(node->item);
+        target->bytes = bytes;
+        mCurrentBytes += bytes;
+        moveToFront(target);
+    }
+    // 旧键无论别名还是被覆盖的冲突条目都要删除，且只扣一次字节
+    mCurrentBytes -= bytes;
+    lruList.erase(node);
     items.erase(it);
-    node->key = newPath;
-    items.insert(newPath, node);
     return true;
 }
 

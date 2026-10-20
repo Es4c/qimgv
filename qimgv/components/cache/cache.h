@@ -19,11 +19,14 @@ public:
     std::shared_ptr<Image> get(const QString &path);
     // 单锁取出并删除，用于 modify 路径合并 3 次加锁为 1 次
     std::shared_ptr<Image> take(const QString &path);
-    // 条目改键（O(1)，只动哈希与链表节点，不触碰像素数据）。用于目录扫描完成后
-    // 把缓存键从用户传入路径改为枚举路径。
-    // - oldPath 不存在、newPath 为空：返回 false，不做任何改动（典型场景是加载仍在途）
-    // - newPath 已被同一对象占用：旧键只是同一张图的另一种拼写，丢旧键后返回 true
-    // - newPath 已被不同对象占用：返回 false 且改回原状，取舍留给调用方
+    // 条目改键（O(1)，只动哈希与链表节点，复用条目已记的字节数：不触碰像素数据、
+    // 不重新估算、不额外分配）。用于目录扫描完成后把缓存键从用户传入路径改为枚举路径。
+    // 冲突策略（本函数保证的不变式）：被改键的条目是权威对象 ——
+    // - newPath 不存在：节点原地改键，LRU 位置不变；
+    // - newPath 是同一对象的别名：旧键只是同一张图的另一种拼写，丢弃旧键；
+    // - newPath 是另一对象（同一文件的另一次加载/预加载）：用被改键的对象覆盖目标条目。
+    // 因此返回 true 后，newPath 一定命中调用方正持有/正在显示的那个对象，且只剩一个键。
+    // 返回 false 只表示 oldPath 不存在（典型场景是加载仍在途）或 newPath 为空。
     bool rekey(const QString &oldPath, const QString &newPath);
     // ⭐ 缓存键由调用方（目录模型）显式给出，不从 img->filePath() 推导。
     // rekey() 之后条目键是目录枚举路径，而 Image 内部仍保存加载时的用户路径；

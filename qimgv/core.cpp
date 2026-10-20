@@ -363,10 +363,9 @@ void Core::onModelLoaded() {
 
     if(currentIndex >= 0) {
         if(actualPath != previousPath) {
-            // 改键失败只有两种可能，都不需要回滚锚定：
-            //  1) 条目尚不存在（加载仍在途）—— onModelItemReady 会补一次改键；
-            //  2) 新键已被同一文件的另一份条目占用（rekey 只在对象不同时才会拒绝），
-            //     此时按新路径精确查找同样能命中，旧别名随 LRU 淘汰回收。
+            // 改键后规范键一定命中当前显示的对象（冲突时由 rekey 内部以旧条目为准覆盖）。
+            // 返回 false 只表示条目尚不存在（加载仍在途）：此时不能凭空造对象，
+            // 等加载完成落到 onModelItemReady() 时再按同一规则改键即可。
             model->rekey(previousPath, actualPath);
             state.currentFilePath = actualPath;
         }
@@ -1572,8 +1571,9 @@ void Core::onModelItemReady(const std::shared_ptr<Image>& img, const QString &pa
     if(samePath(path, state.currentFilePath)) {
         // 重新锚定后仍在途的加载会带着用户路径到达（大小写可能不同）：
         // 缓存 entry 的键就是这条加载路径（Cache::insert 由目录模型显式给键），
-        // 这里把键改到当前路径，保证后续 cachedImage()/isLoaded() 精确查找命中。
-        // 返回 false 只可能是新键已有等价条目，无需补救。
+        // 这里把键改到当前路径。rekey 以被改键的条目为准：目标键即使已被同一文件的
+        // 另一次加载占用，也会被刚解码出的这份覆盖，保证 state.currentImg 与
+        // cachedImage(state.currentFilePath) 是同一个对象。
         if(path != state.currentFilePath)
             model->rekey(path, state.currentFilePath);
         state.currentImg = img;
