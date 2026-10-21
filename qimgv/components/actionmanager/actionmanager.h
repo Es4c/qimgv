@@ -28,6 +28,8 @@ public:
     ~ActionManager();
     
     bool processEvent(QInputEvent* event);
+    // 快捷键字符串已构建时直接分发：避免调用方与 processEvent 各自调用一次 ShortcutBuilder::fromEvent
+    bool invokeActionForShortcut(const QString &shortcut);
     void addShortcut(const QString &keys, const QString &action);
     void resetDefaults();
     void resetDefaults(const QString &action);
@@ -61,7 +63,6 @@ private:
     void readShortcuts();
     void validateShortcuts();
     
-    bool invokeActionForShortcut(const QString &shortcut);
     ActionType validateAction(const QString &actionName) const;
     
     QHash<QString, QString> defaults;

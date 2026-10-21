@@ -1,55 +1,58 @@
 #include "scaler.h"
 #include <QMutexLocker>
 
-Scaler::Scaler(Cache *_cache, QObject *parent)
-    : QObject(parent),
-      buffered(false),
-      running(false),
-      cache(_cache)
+Scaler::Scaler(QObject *parent)
+    : QObject(parent)
 {
     pool = new QThreadPool(this);
-    pool->setMaxThreadCount(1);
+    // 最多同时算两个尺寸：新请求不必等旧请求把整图算完才开始
+    pool->setMaxThreadCount(kMaxConcurrent);
 }
 
 Scaler::~Scaler() {
+    // 先作废所有在算的任务（它们在阶段边界自检代数），并丢弃排队请求：
+    // 队列中的过期请求不会启动；已在 cv::resize() 内的任务无法中断，
+    // waitForDone() 最多等正在执行的一到两次缩放返回
+    //（之后的自检会跳过格式转换/QPixmap 构造）。
+    // 必须等待：runnable 持有 mGeneration 指针且 finished 直连到本对象。
+    mGeneration.fetch_add(1, std::memory_order_relaxed);
+    {
+        QMutexLocker locker(&mutex);
+        mShuttingDown = true;
+        mHasPending = false;
+    }
     pool->waitForDone();
 }
 
 void Scaler::requestScaled(const ScalerRequest &req) {
-    bool needImmediateStart = false;
-    ScalerRequest stamped = req;
+    bool start = false;
+    ScalerRequest toStart;
 
     {
         QMutexLocker locker(&mutex);
 
-        // 🚀 每次请求递增代数并打戳，排队中任务据此自检是否已过期
-        stamped.setGeneration(mGeneration.fetch_add(1, std::memory_order_relaxed) + 1);
-        bufferedRequest = stamped;
+        // 🚀 每次请求递增代数并打戳，在算/排队中的旧任务据此自检是否已过期。
+        // 中间请求只保留最后一次：连续变焦时更早的尺寸已经没人需要
+        mPending = req;
+        mPending.setGeneration(mGeneration.fetch_add(1, std::memory_order_relaxed) + 1);
+        mHasPending = true;
 
-        if (!running) {
-            if (!buffered) {
-                buffered = true;
-                needImmediateStart = true;
-            }
-        } else {
-            if (!buffered) {
-                buffered = true;
-            }
+        if (mActive < kMaxConcurrent) {
+            toStart = std::move(mPending);
+            mHasPending = false;
+            ++mActive;
+            start = true;
         }
     }
 
-    if (needImmediateStart) {
-        startRequest(stamped);
+    if (start) {
+        startRequest(toStart);
     }
 }
 
 void Scaler::startRequest(const ScalerRequest& req) {
     auto *runnable = new ScalerRunnable(req, &mGeneration);
     runnable->setAutoDelete(true);
-
-    connect(runnable, &ScalerRunnable::started,
-            this, &Scaler::onTaskStart,
-            Qt::DirectConnection);
 
     // ✅ 关键：worker 线程直接产出 QPixmap，UI 线程零深拷贝
     connect(runnable, &ScalerRunnable::finished,
@@ -59,47 +62,33 @@ void Scaler::startRequest(const ScalerRequest& req) {
     pool->start(runnable);
 }
 
-void Scaler::onTaskStart(const ScalerRequest &req) {
-    QMutexLocker locker(&mutex);
-
-    running = true;
-    startedRequest = req;
-}
-
 void Scaler::onTaskFinish(QPixmap scaled, ScalerRequest req) {
-    bool deliverResult = false;
-    bool hasNext = false;
+    // ⭐ 只有"最新一代"的结果值得交付：更新一代的请求已在路上/已在算，
+    // 交付旧尺寸只会让视图来回跳一帧
+    const bool current = (req.generation() == mGeneration.load(std::memory_order_relaxed));
+
+    bool start = false;
     ScalerRequest nextReq;
 
     {
         QMutexLocker locker(&mutex);
 
-        running = false;
+        --mActive;
 
-        if (buffered) {
-            if (!scaled.isNull() && bufferedRequest == startedRequest) {
-                // 🚀 缓冲请求与刚完成的完全相同 → 结果直接复用，跳过重复缩放
-                buffered = false;
-                startedRequest = ScalerRequest();
-                deliverResult = true;
-            } else {
-                // 取走缓冲中的最新请求。若启动前又被更新的请求覆盖，
-                // 旧的排队任务会在 run() 开头按代数自检取消，不会白算
-                nextReq = bufferedRequest;
-                buffered = false;
-                hasNext = true;
-            }
-        } else {
-            deliverResult = !scaled.isNull();
-            startedRequest = ScalerRequest();
+        // 排空"最新请求"槽：并发上限未满就立刻开工
+        if (mHasPending && !mShuttingDown && mActive < kMaxConcurrent) {
+            nextReq = std::move(mPending);
+            mHasPending = false;
+            ++mActive;
+            start = true;
         }
     }
 
-    if (hasNext) {
+    if (start) {
         startRequest(nextReq);
     }
 
-    if (deliverResult) {
+    if (current && !scaled.isNull()) {
         emit scalingFinished(std::move(scaled), std::move(req));
     }
 }

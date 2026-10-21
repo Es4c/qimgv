@@ -1,11 +1,50 @@
 #include "core.h"
+#include "utils/pathutils.h"
 #include <QSettings>
 #include <QMimeData>
 #include <QCryptographicHash>
+#include <QDir>
+#include <QDirIterator>
+#include <QFileInfo>
+#include <QSet>
+#include <functional>
+#include <vector>
 
 #ifdef __WIN32
 #include <tchar.h>
 #endif
+
+namespace {
+// 目录扫描完成后，模型里保存的是枚举得到的实际路径；用户传入的路径在 Windows 上
+// 可能只有大小写不同。indexOfFile() 是精确哈希查找，这里在精确查找失败时按平台
+// 规则回退一次，返回模型内实际路径，保证后续 nextOf/prevOf/indexOfFile 可用。
+// 只在平台差异真实存在时才走线性回退；模型内路径本身已是 cleanPath 的绝对路径，
+// 因此逐项比较不再重复清理（零分配）。
+int findModelFileIndex(const DirectoryModel &model, const QString &path,
+                       QString *actualPath)
+{
+    const int exact = model.indexOfFile(path);
+    if (exact >= 0) {
+        if (actualPath)
+            *actualPath = model.filePathAt(exact);
+        return exact;
+    }
+
+#if defined(Q_OS_WIN)
+    const QString target = QDir::cleanPath(path);
+    const int count = model.fileCount();
+    for (int i = 0; i < count; ++i) {
+        const QString &candidate = model.filePathAt(i);
+        if (candidate.compare(target, Qt::CaseInsensitive) == 0) {
+            if (actualPath)
+                *actualPath = candidate;
+            return i;
+        }
+    }
+#endif
+    return -1;
+}
+} // namespace
 
 Core::Core()
         : loopSlideshow(false),
@@ -31,8 +70,10 @@ void Core::readSettings() {
     loopSlideshow = settings->loopSlideshow();
     folderEndAction = settings->folderEndAction();
     slideshowTimer.setInterval(settings->slideshowInterval());
-    if(shuffle)
-        syncRandomizer();
+    // ⭐ 此处原先会 syncRandomizer()（O(n) Fisher-Yates）：settingsChanged 是粗粒度信号，
+    // 连改透明网格都会触发无意义的重新洗牌，还会打乱正在进行的乱序播放顺序。
+    // syncRandomizer() 不读取任何设置值：目录切换（onModelLoaded/attachModel）与
+    // 手动开关 shuffle 时已各自同步，故不再随设置变化重洗
 }
 
 void Core::showGui() {
@@ -173,7 +214,7 @@ void Core::initActions() {
     connect(actionManager, &ActionManager::sortByName, this, &Core::sortByName);
     connect(actionManager, &ActionManager::sortByTime, this, &Core::sortByTime);
     connect(actionManager, &ActionManager::sortBySize, this, &Core::sortBySize);
-    connect(actionManager, &ActionManager::toggleImageInfo, mw.get(), &MW::toggleImageInfoOverlay);
+    connect(actionManager, &ActionManager::toggleImageInfo, this, &Core::onToggleImageInfo);
     connect(actionManager, &ActionManager::toggleShuffle, this, &Core::toggleShuffle);
     connect(actionManager, &ActionManager::toggleScalingFilter, mw.get(), &MW::toggleScalingFilter);
     connect(actionManager, &ActionManager::showInDirectory, this, &Core::showInDirectory);
@@ -305,8 +346,69 @@ void Core::syncRandomizer() {
 }
 
 void Core::onModelLoaded() {
+    if(state.pendingOpen != PendingOpen::None) {
+        if(shuffle)
+            syncRandomizer();
+        openPendingImage();
+        return;
+    }
+
+    // 扫描完成会以目录枚举得到的路径重建列表：用户传入路径可能只有大小写不同。
+    // 重新锚定到模型中的实际路径（不重新加载/重装当前图，也不触碰视图状态），
+    // 否则 indexOfFile/nextOf/prevOf 会因精确匹配失败而无法翻页。
+    // 图片缓存同样按加载路径精确查找，必须同步改键，否则重新锚定后
+    // isLoaded()/cachedImage() 全部 miss：缩放不再请求、幻灯片计时不启动、
+    // 信息栏尺寸归零。
+    const QString previousPath = state.currentFilePath;
+    QString actualPath;
+    const int currentIndex = previousPath.isEmpty()
+        ? -1
+        : findModelFileIndex(*model, previousPath, &actualPath);
+
+    if(currentIndex >= 0) {
+        if(actualPath != previousPath) {
+            // 旧键缺失有两种可能：加载仍在途（currentImg 还是上一张或为空），或条目已被
+            // 淘汰/缓存禁用而对象仍被显示持有。后者用显示中的对象回填规范键，避免
+            // cachedImage(actualPath) 命中另一份对象，且不重新解码。
+            // filePath() 校验归属是必须的：loadPath() 打开新文件时不重置 currentImg，
+            // 翻页在途时它仍属于上一张，绝不能回填到当前路径。
+            if(state.currentImg &&
+               samePath(state.currentImg->filePath(), previousPath))
+                model->rekey(previousPath, actualPath, state.currentImg);
+            else
+                model->rekey(previousPath, actualPath);
+            state.currentFilePath = actualPath;
+        }
+
+        // 首次打开时扫描尚未完成，loadFileIndex() 看到的邻图为空。
+        // 列表就绪后补一次预加载；loader 按路径去重，重扫/排序不会重复提交任务。
+        if(settings->usePreloader()) {
+            model->preload(model->nextOf(actualPath));
+            model->preload(model->prevOf(actualPath));
+        }
+    }
+
     if(shuffle)
         syncRandomizer();
+
+    updateInfoString();
+}
+
+// 目录列表就绪后打开目标图。空目录也要发 firstImageReady：
+// main.cpp 以它作为显示主窗口的时机（命令行传目录启动依赖这条路径）
+void Core::openPendingImage() {
+    const PendingOpen pending = state.pendingOpen;
+    state.pendingOpen = PendingOpen::None;
+
+    if(model->fileCount() > 0) {
+        const int index = (pending == PendingOpen::Last) ? model->fileCount() - 1 : 0;
+        // 兜底：即使索引异常也要发 firstImageReady，否则命令行启动时主窗口不显示
+        if(!loadFileIndex(index, true, settings->usePreloader()))
+            emit firstImageReady();
+    } else {
+        emit firstImageReady();
+        updateInfoString();
+    }
 }
 
 void Core::rotateLeft() {
@@ -604,8 +706,55 @@ QMimeData* Core::getMimeDataForImage(const std::shared_ptr<Image>& img,
     return mimeData;
 }
 
+void Core::applySortingMode(SortingMode mode) {
+    // ⭐ 乱序模式的置换建立在“文件下标”之上，而排序会改变下标的含义（同一文件换了下标）。
+    // 因此在排序前记录文件顺序，排序后把「旧下标 → 新下标」映射进置换：
+    // 每个位置对应的文件不变，正在进行的乱序队列与游标位置都不受影响。
+    // 是否重映射取决于 shuffle 状态而非快照是否为空：乱序开着但目录为空时快照同样是空的，
+    // 此时也要走 remapShuffleIndices()，由其中的数量校验决定重映射还是回退重建。
+    const bool shouldRemap = shuffle;
+    QList<QString> previousOrder;
+    if(shouldRemap) {
+        const int count = model->fileCount();
+        previousOrder.reserve(count);
+        for(int i = 0; i < count; ++i)
+            previousOrder.append(model->filePathAt(i));
+    }
+
+    model->setSortingMode(mode);   // 同步 emit sortingChanged，见 onModelSortingChanged
+
+    if(shouldRemap)
+        remapShuffleIndices(previousOrder);
+}
+
+void Core::remapShuffleIndices(const QList<QString>& previousOrder) {
+    const int count = model->fileCount();
+    if(previousOrder.size() != count) {   // 排序前后文件数不一致，旧下标已无意义
+        syncRandomizer();
+        return;
+    }
+
+    QHash<QString, int> newIndexOf;
+    newIndexOf.reserve(count);
+    for(int i = 0; i < count; ++i)
+        newIndexOf.insert(model->filePathAt(i), i);
+
+    std::vector<size_t> sigma(static_cast<size_t>(count));
+    for(int i = 0; i < count; ++i) {
+        const auto it = newIndexOf.constFind(previousOrder.at(i));
+        if(it == newIndexOf.cend()) {     // 列表在排序期间发生变化，映射不再一一对应
+            syncRandomizer();
+            return;
+        }
+        sigma[static_cast<size_t>(i)] = static_cast<size_t>(*it);
+    }
+
+    if(!randomizer.remap(sigma))
+        syncRandomizer();
+}
+
 void Core::sortBy(SortingMode mode) {
-    model->setSortingMode(mode);
+    applySortingMode(mode);
 }
 
 void Core::renameCurrentSelection(const QString& newName) {
@@ -673,8 +822,12 @@ void Core::onFileRenamed(const QString& fromPath, int /*indexFrom*/, const QStri
 void Core::onFileAdded(const QString& filePath) {
     Q_UNUSED(filePath)
     updateInfoString();
-    if(model->fileCount() == 1 && state.currentFilePath.isEmpty())
-        loadFileIndex(0, false, settings->usePreloader());
+    // ⭐ 与首图/幻灯片一致：异步解码，避免在 GUI 线程同步读盘。
+    // pendingOpen 期间由 openPendingImage() 统一决定打开首图还是末图：
+    // 扫描结束时会先重放缓冲的 watcher 事件，这里不能抢先打开第一张。
+    if(state.pendingOpen == PendingOpen::None
+       && model->fileCount() == 1 && state.currentFilePath.isEmpty())
+        loadFileIndex(0, true, settings->usePreloader());
 }
 
 void Core::onFileModified(const QString& filePath) {
@@ -1029,21 +1182,21 @@ void Core::sortByName() {
     auto mode = SortingMode::SORT_NAME;
     if(model->sortingMode() == mode)
         mode = SortingMode::SORT_NAME_DESC;
-    model->setSortingMode(mode);
+    applySortingMode(mode);
 }
 
 void Core::sortByTime() {
     auto mode = SortingMode::SORT_TIME;
     if(model->sortingMode() == mode)
         mode = SortingMode::SORT_TIME_DESC;
-    model->setSortingMode(mode);
+    applySortingMode(mode);
 }
 
 void Core::sortBySize() {
     auto mode = SortingMode::SORT_SIZE;
     if(model->sortingMode() == mode)
         mode = SortingMode::SORT_SIZE_DESC;
-    model->setSortingMode(mode);
+    applySortingMode(mode);
 }
 
 void Core::showRenameDialog() {
@@ -1111,15 +1264,17 @@ void Core::print() {
 
 void Core::scalingRequest(QSize size, ScalingFilter filter) {
     if(mw->isVisible() && state.hasActiveImage) {
-        std::shared_ptr<Image> forScale = model->getImage(state.currentFilePath);
+        // ⭐ 只查缓存：异步加载在途时 resize/滚轮不能在这里同步解码整图
+        std::shared_ptr<Image> forScale = model->cachedImage(state.currentFilePath);
         if(forScale) {
-            model->scaler->requestScaled(ScalerRequest(forScale, size, state.currentFilePath, filter));
+            // GUI 线程快照设置，worker 只读请求对象，不再访问 Settings
+            model->scaler->requestScaled(ScalerRequest(forScale, size, state.currentFilePath, filter, settings->smoothUpscaling()));
         }
     }
 }
 
 void Core::onScalingFinished(const QPixmap& scaled, const ScalerRequest& req) {
-    if (state.hasActiveImage && req.pathRef() == state.currentFilePath) {
+    if (state.hasActiveImage && samePath(req.pathRef(), state.currentFilePath)) {
         mw->onScalingFinished(scaled); 
     }
 }
@@ -1128,8 +1283,153 @@ void Core::reset() {
     editedImageCacheKeys.clear();
     state.hasActiveImage = false;
     state.currentFilePath = "";
+    // 旧图不再对应当前路径：清掉引用，避免扫描/加载空窗期读到上一张的元数据
+    state.currentImg.reset();
     model->setDirectory("");
 }
+
+// ===== AdjacentDirFinder begin =====
+namespace {
+// 在目录树的前序遍历（节点 → 其子目录按序）中，查找当前目录之后/之前
+// 第一个“直接包含图片”的目录。
+//   next: 当前目录的子树 → 逐级上溯，依次扫描各级后续同级目录的子树
+//   prev: 逐级上溯，依次扫描各级前面同级目录的子树（反向前序），然后是父目录自身
+// 遍历范围限定在 root 的子树内（root 自身也参与 prev，不参与 next）。
+// 为防止符号链接环/超大目录树卡死界面，设置了深度与访问数量上限。
+class AdjacentDirFinder {
+public:
+    using ListFn  = std::function<QStringList(const QString &)>;
+    using ImageFn = std::function<bool(const QString &)>;
+
+    AdjacentDirFinder(ListFn listChildren, ImageFn hasImages, QString root)
+        : mList(std::move(listChildren)), mHasImages(std::move(hasImages)),
+          mRoot(std::move(root)) {}
+
+    static QString parentOf(const QString &path) {
+        return QFileInfo(QDir::cleanPath(path)).absolutePath();
+    }
+
+    QString next(const QString &current) {
+        beginSearch(current);
+        // 1) 当前目录自己的子目录（深度优先）
+        for(const QString &child : mList(current)) {
+            const QString r = firstIn(child, 1);
+            if(!r.isEmpty())
+                return r;
+        }
+        // 2) 逐级上溯：每一级只看当前节点“之后”的同级目录
+        QString node = current;
+        while(!samePath(node, mRoot)) {
+            const QString parent = parentOf(node);
+            if(samePath(parent, node))
+                break;
+            const QStringList siblings = mList(parent);
+            const int idx = indexOf(siblings, node);
+            if(idx >= 0) {
+                for(int i = idx + 1; i < siblings.size(); ++i) {
+                    const QString r = firstIn(siblings[i], 1);
+                    if(!r.isEmpty())
+                        return r;
+                }
+            }
+            node = parent;
+        }
+        return {};
+    }
+
+    QString prev(const QString &current) {
+        beginSearch(current);
+        QString node = current;
+        while(!samePath(node, mRoot)) {
+            const QString parent = parentOf(node);
+            if(samePath(parent, node))
+                break;
+            const QStringList siblings = mList(parent);
+            const int idx = indexOf(siblings, node);
+            // 前面的同级目录：每个子树取“最后一个”
+            for(int i = idx - 1; i >= 0; --i) {
+                const QString r = lastIn(siblings[i], 1);
+                if(!r.isEmpty())
+                    return r;
+            }
+            // 前序中父目录位于其所有子目录之前
+            if(enter(parent, 1) && mHasImages(parent))
+                return parent;
+            node = parent;
+        }
+        return {};
+    }
+
+private:
+    static constexpr int kMaxDepth   = 64;
+    static constexpr int kMaxVisited = 20000;
+
+    ListFn  mList;
+    ImageFn mHasImages;
+    QString mRoot;
+    int     mVisited = 0;
+
+    static bool isInside(const QString &path, const QString &root) {
+        if(samePath(path, root))
+            return true;
+        QString base = QDir::cleanPath(root);
+        if(!base.endsWith(u'/'))
+            base += u'/';
+#if defined(Q_OS_WIN)
+        return QDir::cleanPath(path).startsWith(base, Qt::CaseInsensitive);
+#else
+        return QDir::cleanPath(path).startsWith(base);
+#endif
+    }
+
+    // root 必须是 current 的祖先（或自身），否则退化为 current 的父目录
+    void beginSearch(const QString &current) {
+        mVisited = 0;
+        if(mRoot.isEmpty() || !isInside(current, mRoot))
+            mRoot = parentOf(current);
+    }
+
+    static int indexOf(const QStringList &list, const QString &path) {
+        for(int i = 0; i < list.size(); ++i) {
+            if(samePath(list[i], path))
+                return i;
+        }
+        return -1;
+    }
+
+    bool enter(const QString &, int depth) {
+        return depth <= kMaxDepth && ++mVisited <= kMaxVisited;
+    }
+
+    // 子树（前序，含 dir 自身）中第一个含图片的目录
+    QString firstIn(const QString &dir, int depth) {
+        if(!enter(dir, depth))
+            return {};
+        if(mHasImages(dir))
+            return dir;
+        for(const QString &child : mList(dir)) {
+            const QString r = firstIn(child, depth + 1);
+            if(!r.isEmpty())
+                return r;
+        }
+        return {};
+    }
+
+    // 子树（前序，含 dir 自身）中最后一个含图片的目录
+    QString lastIn(const QString &dir, int depth) {
+        if(!enter(dir, depth))
+            return {};
+        const QStringList kids = mList(dir);
+        for(int i = static_cast<int>(kids.size()) - 1; i >= 0; --i) {
+            const QString r = lastIn(kids[i], depth + 1);
+            if(!r.isEmpty())
+                return r;
+        }
+        return mHasImages(dir) ? dir : QString();
+    }
+};
+} // namespace
+// ===== AdjacentDirFinder end =====
 
 bool Core::loadPath(const QString& path) {
     if(path.isEmpty())
@@ -1137,53 +1437,79 @@ bool Core::loadPath(const QString& path) {
 
     if(path.startsWith("file://", Qt::CaseInsensitive))
         return loadPath(path.mid(7));
-    
+
     const QString& cleanPath = path;
 
     stopSlideshow();
-    state.delayModel = false;
+    // 单文件分支自行管理；目录分支由 openPendingImage() 消费
+    state.pendingOpen = PendingOpen::None;
 
     QFileInfo fileInfo(cleanPath);
 
     if(fileInfo.isDir()) {
+        // ⭐ 目录枚举在 worker 线程：先登记待打开目标，列表就绪后由 onModelLoaded 打开首图。
+        // 顺带修复"以目录作为命令行参数启动时窗口永不显示"：原实现走 isDir 分支
+        // 只 setDirectory 后 return false，从不发 firstImageReady，而 main.cpp
+        // 只在 firstImageReady 里 showGui。
         state.directoryPath = fileInfo.absoluteFilePath();
-    } else if(fileInfo.isFile()) {
-        state.directoryPath = fileInfo.absolutePath();
-        if(model->directoryPath() != state.directoryPath)
-            state.delayModel = true;
-    } else {
+        state.browseRoot = AdjacentDirFinder::parentOf(state.directoryPath);
+        state.pendingOpen = PendingOpen::First;
+        if(!setDirectory(state.directoryPath)) {
+            state.pendingOpen = PendingOpen::None;
+            return false;
+        }
+        // 该目录已在内存（同一目录重复打开）：不会有 loaded 信号，直接打开
+        if(!model->isScanning())
+            openPendingImage();
+        return true;
+    }
+
+    if(!fileInfo.isFile()) {
         mw->showError(tr("Could not open path: ") + cleanPath);
         qDebug() << "Could not open path:" << cleanPath;
         return false;
     }
 
-    if(!state.delayModel && !setDirectory(state.directoryPath))
+    // load file
+    state.directoryPath = fileInfo.absolutePath();
+    state.browseRoot = AdjacentDirFinder::parentOf(state.directoryPath);
+    // 目录扫描与目标图解码都是异步的，可并行进行：
+    // 扫描尚未完成时先增量插入目标图（扫描结果随后会覆盖列表）
+    if(!setDirectory(state.directoryPath))
         return false;
 
-    // load file
-    if(fileInfo.isFile()) {
+    {
         const QString absFilePath = fileInfo.absoluteFilePath();
-
-        int index = model->indexOfFile(absFilePath);
+        // 精确匹配失败时按平台规则回退（Windows 大小写/分隔符差异），
+        // 命中现有模型条目就直接复用，避免同一文件以不同大小写插入两次。
+        int index = findModelFileIndex(*model, absFilePath, nullptr);
 
         if(index == -1) {
-            const QStringList types = settings->supportedMimeTypes();
-
-            QMimeDatabase db;
-            const QMimeType type = db.mimeTypeForFile(absFilePath);
-
-            if(types.contains(type.name())) {
-                if(model->forceInsert(absFilePath)) {
-                    index = model->indexOfFile(absFilePath);
-                }
+            // 扫描在 worker 上进行，列表此刻必然为空/未包含目标文件：
+            // 直接按后缀校验增量插入，不再依赖 MIME 兜底（后者会拒绝
+            // 后缀受支持但 MIME 未收录的文件，导致显式打开失败）
+            const QString previous = state.currentFilePath;
+            // insertFile 会同步 emit fileAdded，而 onFileAdded 有"首个文件自动打开"
+            // 分支；先登记当前路径让该分支跳过，统一由本函数随后加载
+            state.currentFilePath = absFilePath;
+            if(!model->insertFile(absFilePath)) {
+                state.currentFilePath = previous;
+                mw->showError(tr("Could not open path: ") + cleanPath);
+                return false;
+            }
+            index = findModelFileIndex(*model, absFilePath, nullptr);
+            if(index == -1) {
+                state.currentFilePath = previous;
+                mw->showError(tr("Could not open path: ") + cleanPath);
+                return false;
             }
         }
 
         mw->enableDocumentView();
-        return loadFileIndex(index, false, settings->usePreloader());
+        // loadFileIndex() 会把 state.currentFilePath 设为模型条目记录的实际路径：
+        // 大小写回退命中时，导航、缓存查找和当前图像都使用同一规范路径。
+        return loadFileIndex(index, true, settings->usePreloader());
     }
-
-    return false;
 }
 
 bool Core::setDirectory(const QString& path) {
@@ -1230,159 +1556,85 @@ void Core::loadParentDir() {
         loadPath(parentDir.absoluteFilePath());
 }
 
-// Descend into a directory tree.
-// forward=true: return first subdir with images (top-down)
-// forward=false: return last subdir with images (bottom-up)
-QString Core::findImageDirDescending(const QString &dirPath, bool forward) {
-    DirectoryManager dm;
-    if(!dm.setDirectory(dirPath))
-        return QString();
-    if(forward) {
-        if(dm.fileCount())
-            return dirPath;
-        for(int i = 0; i < (int)dm.dirCount(); i++) {
-            QString result = findImageDirDescending(dm.dirPathAt(i), forward);
-            if(!result.isEmpty())
-                return result;
-        }
-    } else {
-        for(int i = (int)dm.dirCount() - 1; i >= 0; i--) {
-            QString result = findImageDirDescending(dm.dirPathAt(i), forward);
-            if(!result.isEmpty())
-                return result;
-        }
-        if(dm.fileCount())
-            return dirPath;
-    }
-    return QString();
-}
+QString Core::findAdjacentDirectory(bool forward) {
+    // 受支持后缀的小写集合，整次查找只构建一次
+    QSet<QString> formats;
+    for(const QByteArray &f : settings->supportedFormats())
+        formats.insert(QString::fromLatin1(f).toLower());
 
-// Walk the directory tree to find next/prev folder with images, recursively.
-// forward=true: next, forward=false: prev
-QString Core::findAdjacentDirectoryWithImages(const QString &currentDirPath, bool forward) {
-    QString path = currentDirPath;
-    // When going forward, first check subdirectories of current folder
-    if(forward) {
-        DirectoryManager dmCurrent;
-        if(dmCurrent.setDirectory(path)) {
-            for(int i = 0; i < (int)dmCurrent.dirCount(); i++) {
-                QString result = findImageDirDescending(dmCurrent.dirPathAt(i), true);
-                if(!result.isEmpty())
-                    return result;
-            }
+    // 子目录列表：复用 siblingDirs（带排序设置），立刻拷出，因为下一次调用会覆盖其内容
+    const auto listChildren = [this](const QString &dir) {
+        QStringList out;
+        if(!siblingDirs.setDirectoryDirsOnly(dir))
+            return out;
+        const int n = static_cast<int>(siblingDirs.dirCount());
+        out.reserve(n);
+        for(int i = 0; i < n; ++i)
+            out.append(siblingDirs.dirPathAt(i));
+        return out;
+    };
+
+    // 目录本身（不含子目录）是否含有受支持图片；遇到第一个即返回
+    const auto hasImages = [&formats](const QString &dir) {
+        QDirIterator it(dir, QDir::Files | QDir::NoDotAndDotDot);
+        while(it.hasNext()) {
+            it.next();
+            const QString name = it.fileName();
+            const qsizetype dot = name.lastIndexOf(u'.');
+            if(dot > 0 && dot < name.size() - 1 &&
+               formats.contains(name.mid(dot + 1).toLower()))
+                return true;
         }
-    }
-    while(true) {
-        QFileInfo parentDir(QFileInfo(path).absolutePath());
-        if(!parentDir.exists() || !parentDir.isReadable())
-            return QString();
-        DirectoryManager dm;
-        if(!dm.setDirectory(parentDir.absoluteFilePath()))
-            return QString();
-        QString sibling = forward ? dm.nextOfDir(path) : dm.prevOfDir(path);
-        if(sibling.isEmpty()) {
-            // No more siblings at this level — climb up
-            if(!forward) {
-                DirectoryManager dmParent;
-                if(dmParent.setDirectory(parentDir.absoluteFilePath()) && dmParent.fileCount())
-                    return parentDir.absoluteFilePath();
-            }
-            path = parentDir.absoluteFilePath();
-            continue;
-        }
-        // Descend into the sibling tree
-        QString candidate = findImageDirDescending(sibling, forward);
-        if(!candidate.isEmpty())
-            return candidate;
-        // Sibling tree had no images — skip it and continue
-        path = sibling;
-    }
+        return false;
+    };
+
+    AdjacentDirFinder finder(listChildren, hasImages, state.browseRoot);
+    const QString current = model->directoryPath();
+    return forward ? finder.next(current) : finder.prev(current);
 }
 
 void Core::nextDirectory() {
     if(model->directoryPath().isEmpty())
         return;
     stopSlideshow();
-    pendingDirSwitch = 1;
-    pendingSelectLast = false;
-    if(nextDirCache.first == model->directoryPath() && !nextDirCache.second.isEmpty())
-        dirSwitchTimer.start();
-    else
-        doDirectorySwitch();
+    // 递归查找：先进当前目录的子目录，再上溯到后续同级目录及其子目录；
+    // 跳过本身与子树内都没有图片的目录
+    const QString next = findAdjacentDirectory(true);
+    if(!next.isEmpty()) {
+        // ⭐ 列表异步枚举，目标图要等 loaded 后才知道索引（onModelLoaded → openPendingImage）
+        state.pendingOpen = PendingOpen::First;
+        if(!setDirectory(next)) {
+            state.pendingOpen = PendingOpen::None;
+            return;
+        }
+        QFileInfo fi(next);
+        mw->showMessageDirectory(fi.baseName());
+    } else {
+        mw->showMessageDirectoryEnd();
+    }
 }
-
 
 void Core::prevDirectory(bool selectLast) {
     if(model->directoryPath().isEmpty())
         return;
-    QString prev = findAdjacentDirectoryWithImages(model->directoryPath(), false);
+    // 见 nextDirectory()：反向前序递归查找
+    const QString prev = findAdjacentDirectory(false);
     if(!prev.isEmpty()) {
-        if(!setDirectory(prev))
+        state.pendingOpen = selectLast ? PendingOpen::Last : PendingOpen::First;
+        if(!setDirectory(prev)) {
+            state.pendingOpen = PendingOpen::None;
             return;
-        mw->showMessageDirectory(QFileInfo(prev).baseName());
-        if(model->fileCount()) {
-            if(selectLast)
-                loadFileIndex(model->fileCount() - 1, false, true);
-            else
-                loadFileIndex(0, false, true);
-        } else {
-            mw->showMessageDirectoryStart();
         }
-    }
-}
-
-void Core::doDirectorySwitch() {
-    if(pendingDirSwitch == 0 || model->directoryPath().isEmpty())
-        return;
-    bool forward = (pendingDirSwitch == 1);
-    bool selectLast = pendingSelectLast;
-    pendingDirSwitch = 0;
-
-    QString currentDir = model->directoryPath();
-    QString target;
-
-    if(forward) {
-        if(nextDirCache.first == currentDir && !nextDirCache.second.isEmpty()) {
-            target = nextDirCache.second;
-            nextDirCache = {};
-        } else {
-            nextDirCache = {};
-            target = findAdjacentDirectoryWithImages(currentDir, true);
-        }
-        if(!target.isEmpty())
-            prevDirCache = {target, currentDir};
+        QFileInfo fi(prev);
+        mw->showMessageDirectory(fi.baseName());
     } else {
-        if(prevDirCache.first == currentDir && !prevDirCache.second.isEmpty()) {
-            target = prevDirCache.second;
-            prevDirCache = {};
-        } else {
-            prevDirCache = {};
-            target = findAdjacentDirectoryWithImages(currentDir, false);
-        }
-        if(!target.isEmpty())
-            nextDirCache = {target, currentDir};
-    }
-
-    if(target.isEmpty()) {
-        if(forward) mw->showMessageDirectoryEnd();
-        else mw->showMessageDirectoryStart();
-        return;
-    }
-    if(!setDirectory(target))
-        return;
-    mw->showMessageDirectory(QFileInfo(target).baseName());
-    if(model->fileCount()) {
-        if(!forward && selectLast)
-            loadFileIndex(model->fileCount() - 1, false, true);
-        else
-            loadFileIndex(0, false, true);
+        mw->showMessageDirectoryStart();
     }
 }
 
 void Core::prevDirectory() {
     prevDirectory(false);
 }
-
 
 void Core::nextImage() {
     if(model->isEmpty() && folderEndAction != FOLDER_END_GOTO_ADJACENT)
@@ -1437,7 +1689,7 @@ void Core::nextImageSlideshow() {
     if(model->isEmpty())
         return;
     if(shuffle) {
-        loadFileIndex(static_cast<int>(randomizer.next()), false, false);
+        loadFileIndex(static_cast<int>(randomizer.next()), true, false);
     } else {
         int newIndex = model->indexOfFile(state.currentFilePath) + 1;
         if(newIndex >= model->fileCount()) {
@@ -1449,12 +1701,17 @@ void Core::nextImageSlideshow() {
                 return;
             }
         }
-        loadFileIndex(newIndex, false, true);
+        // ⭐ 异步加载：计时器改由 onModelItemReady 在图片就绪后重启。
+        // 若在这里 startSlideshowTimer()，其内部的 getImage() 会对未缓存的下一张
+        // 同步解码，等于把刚才省下的阻塞又加回来
+        loadFileIndex(newIndex, true, true);
     }
-    startSlideshowTimer();
 }
 
 void Core::startSlideshowTimer() {
+    // ⭐ 异步加载中不要兜底同步解码：图片就绪后 onModelItemReady 会再次调用
+    if(!model->isLoaded(state.currentFilePath))
+        return;
     auto img = model->getImage(state.currentFilePath);
     if(!img)
         return;
@@ -1462,8 +1719,28 @@ void Core::startSlideshowTimer() {
         slideshowTimer.start();
     } else if(img->type() == ANIMATED) {
         auto anim = dynamic_cast<ImageAnimated *>(img.get());
-        if(anim && anim->frameCount() <= 1)
+        if(!anim)
+            return;
+        // 动画播放与固定停留计时是互斥的：先清掉可能属于上一张图的计时器，
+        // 再按单帧/无效或多帧/未知帧数选择唯一的推进方式。
+        slideshowTimer.stop();
+        // ⭐ 只对"确知单帧"或"首帧都没解出来"的情况起固定停留计时。
+        // frameCount() == 0 是帧数未知（imageCount() 扫描失败的动画），
+        // startAnimation() 会正常播放它：再挂一个固定计时器会在动画没播完时把图
+        // 切走（两个时钟互相抢，长动画被截断）。未知帧数与已知多帧动画统一由
+        // playbackFinished 推进；未知帧数之后被 EOF 修正为 1 时，onAnimationTimer()
+        // 的 count == 1 分支也会补发 playbackFinished，幻灯片不会停住。
+        // !isValid()：没有一个可显示的帧，视图会拒绝播放（不会有 playbackFinished），
+        // 只能靠计时器越过这张坏图。
+        if(anim->frameCount() == 1 || !anim->isValid()) {
             slideshowTimer.start();
+        } else {
+            // 幻灯片开启时动画可能正被用户暂停：通过 GUI 控制接口恢复播放，
+            // 由动画计时器和解码任务继续推进；固定停留计时器不能同时挂上。
+            // 加载在途（mStartAnimationOnFrameReady）由 Viewer 的首帧就绪回调启动，
+            // resumeAnimation() 会跳过，避免按旧播放头抢跑。
+            mw->resumeAnimation();
+        }
     }
 }
 
@@ -1485,39 +1762,48 @@ void Core::jumpToLast() {
 
 void Core::onLoadFailed(const QString &path) {
     mw->showMessage(tr("Load failed: ") + path);
-    if(path == state.currentFilePath)
+    if(samePath(path, state.currentFilePath)) {
         mw->closeImage();
+        // ⭐ 首图加载失败也要显示窗口：main.cpp 只在 firstImageReady 里 showGui
+        if(!state.hasActiveImage)
+            emit firstImageReady();
+        // ⭐ 幻灯片异步加载失败时没有 onModelItemReady 可依赖：
+        // 直接重启计时，到点后从当前（失败）图前进到下一张，避免整场幻灯片停住
+        if(state.slideshowActive)
+            slideshowTimer.start();
+    }
 }
 
 void Core::onModelItemReady(const std::shared_ptr<Image>& img, const QString &path) {
-    if(path == state.currentFilePath) {
+    if(samePath(path, state.currentFilePath)) {
+        // 重新锚定后仍在途的加载会带着用户路径到达（大小写可能不同）：
+        // 缓存 entry 的键就是这条加载路径（Cache::insert 由目录模型显式给键），
+        // 这里把键改到当前路径。rekey 以被改键的条目为准：目标键即使已被同一文件的
+        // 另一次加载占用，也会被刚解码出的这份覆盖，保证 state.currentImg 与
+        // cachedImage(state.currentFilePath) 是同一个对象。
+        if(path != state.currentFilePath)
+            model->rekey(path, state.currentFilePath);
         state.currentImg = img;
         guiSetImage(img);
         emit firstImageReady();
         updateInfoString();
 
-        if(state.delayModel) {
-            state.delayModel = false;
-            QTimer::singleShot(40, this, &Core::modelDelayLoad);
-        }
+        // 幻灯片：图片就绪（可能刚异步解码完）后才启动停留计时
+        if(state.slideshowActive)
+            startSlideshowTimer();
     }
 }
 
-void Core::modelDelayLoad() {
-    model->setDirectory(state.directoryPath);
-    mw->setDirectoryPath(state.directoryPath);
-    model->updateImage(state.currentFilePath, state.currentImg);
-    updateInfoString();
-}
-
 void Core::onModelItemUpdated(const QString& filePath) {
-    if(filePath == state.currentFilePath) {
+    if(samePath(filePath, state.currentFilePath)) {
         guiSetImage(model->getImage(filePath));
         updateInfoString();
     }
 }
 
 void Core::onModelSortingChanged(SortingMode mode) {
+    // ⭐ 乱序置换的重映射需要“排序前”的文件顺序，而 sortingChanged 是在排序之后才发出的，
+    // 所以那件事在 applySortingMode() 里做；这里只同步界面。
     mw->onSortingChanged(mode);
 }
 
@@ -1543,7 +1829,17 @@ void Core::guiSetImage(const std::shared_ptr<Image>& img) {
     }
     state.isEdited = img->isEdited();
     img->isEdited() ? mw->showSaveOverlay() : mw->hideSaveOverlay();
-    mw->setExifInfo(img->getExifTags());
+    // ⭐ EXIF 仅供信息叠加层使用，默认隐藏：仅在可见时读取，
+    // 避免每张图都重复打开文件解析文本元数据
+    if (mw->isImageInfoOverlayVisible())
+        mw->setExifInfo(img->getExifTags());
+}
+
+void Core::onToggleImageInfo() {
+    // 叠加层打开前才读取当前图 EXIF（隐藏期间切换图片不产生任何文件 I/O）
+    if (!mw->isImageInfoOverlayVisible() && state.currentImg)
+        mw->setExifInfo(state.currentImg->getExifTags());
+    mw->toggleImageInfoOverlay();
 }
 
 void Core::updateInfoString() {

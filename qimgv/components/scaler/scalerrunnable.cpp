@@ -1,6 +1,5 @@
 #include "scalerrunnable.h"
 #include "utils/imagelib.h"
-#include "settings.h"
 #include <utility>
 
 ScalerRunnable::ScalerRunnable(const ScalerRequest& request, std::atomic<quint64>* generation)
@@ -11,12 +10,9 @@ ScalerRunnable::ScalerRunnable(const ScalerRequest& request, std::atomic<quint64
 
 void ScalerRunnable::run()
 {
-    // 1️⃣ 开始信号（不能 move）
-    emit started(m_request);
-
     // 🚀 陈旧性自检：排队期间若有更新的请求到来（代数已递增），直接放弃，避免白算一次缩放
-    if (m_generation &&
-        m_generation->load(std::memory_order_relaxed) != m_request.generation()) {
+    if (outdated())
+    {
         emit finished(QPixmap(), std::move(m_request));
         return;
     }
@@ -43,13 +39,21 @@ void ScalerRunnable::run()
     bool useNearest = (effectiveFilter == QI_FILTER_NEAREST) ||
                       ((targetSize.width()  > sourceImage.width() ||
                         targetSize.height() > sourceImage.height()) &&
-                       !settings->smoothUpscaling());
+                       !m_request.smoothUpscaling());
 
     ScalingFilter filterToUse = useNearest ? QI_FILTER_NEAREST : effectiveFilter;
 
     QImage scaled = ImageLib::scaled(sourceImage,
                                      targetSize,
                                      filterToUse);
+
+    // 🚀 缩放结束后再自检一次：单次 resize 调用内部无法中断，
+    // 但后续的格式转换 + QPixmap 构造（整图像素拷贝）可以省掉
+    if (outdated())
+    {
+        emit finished(QPixmap(), std::move(m_request));
+        return;
+    }
 
     // 3️⃣ 🚀 关键优化：像素转换移入 worker 线程（Windows raster 允许在非 GUI 线程创建 QPixmap），
     //    UI 线程只做隐式共享浅拷贝。已是 ARGB32_Premultiplied 时跳过格式转换。
@@ -59,4 +63,10 @@ void ScalerRunnable::run()
 
     // m_request 生命周期结束 → move
     emit finished(std::move(result), std::move(m_request));
+}
+
+bool ScalerRunnable::outdated() const
+{
+    return m_generation
+           && m_generation->load(std::memory_order_relaxed) != m_request.generation();
 }

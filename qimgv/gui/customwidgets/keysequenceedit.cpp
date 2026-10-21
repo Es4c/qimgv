@@ -1,15 +1,18 @@
 #include "keysequenceedit.h"
 
+#include <utility>
+
 KeySequenceEdit::KeySequenceEdit(QWidget *parent) : QPushButton(parent), mSequence("") {
     QPushButton::setText(tr("[Enter sequence]"));
 }
 
-QString KeySequenceEdit::sequence() {
+QString KeySequenceEdit::sequence() const {
     return mSequence;
 }
 
-void KeySequenceEdit::setText(const QString &text) {
-    mSequence = text;
+void KeySequenceEdit::setText(QString text) {
+    // 按值 sink：调用方传右值或 std::move() 时直接搬移，避免一次浅拷贝
+    mSequence = std::move(text);
     QPushButton::setText(mSequence);
 }
 
@@ -40,8 +43,8 @@ void KeySequenceEdit::processEvent(QEvent *e) {
         return;
     QString tmp = ShortcutBuilder::fromEvent(inputEvent);
     if(!tmp.isEmpty()) {
-        mSequence = tmp;
-        setText(mSequence);
+        // 直接搬移进 setText()：不再经 mSequence 复制 + setText(mSequence) 的自赋值
+        setText(std::move(tmp));
         emit edited();
     }
 }

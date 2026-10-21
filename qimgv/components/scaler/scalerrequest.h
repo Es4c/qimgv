@@ -16,11 +16,13 @@ public:
     ScalerRequest(std::shared_ptr<Image> image,
                   QSize size,
                   QString path,
-                  ScalingFilter filter) noexcept
+                  ScalingFilter filter,
+                  bool smoothUpscaling) noexcept
         : m_image(std::move(image))
         , m_size(size)
         , m_path(std::move(path))
         , m_filter(filter)
+        , m_smoothUpscaling(smoothUpscaling)
     {}
 
     // ✅ 保持默认语义（Qt6 已优化）
@@ -50,11 +52,17 @@ public:
         return m_filter;
     }
 
+    // 主线程提交时快照，worker 只读：避免解码线程访问 Settings（跨线程竞争）
+    [[nodiscard]] bool smoothUpscaling() const noexcept {
+        return m_smoothUpscaling;
+    }
+
     // 🚀 指针比较避免字符串比较（非常关键）；代数不参与相等比较
     bool operator==(const ScalerRequest& other) const noexcept {
         return m_image.get() == other.m_image.get() &&
                m_size == other.m_size &&
-               m_filter == other.m_filter;
+               m_filter == other.m_filter &&
+               m_smoothUpscaling == other.m_smoothUpscaling;
     }
 
     bool operator!=(const ScalerRequest& other) const noexcept {
@@ -66,8 +74,13 @@ private:
     QSize m_size;
     QString m_path;
     ScalingFilter m_filter;
+    // 紧随 m_filter：复用其后原有的对齐填充，sizeof 不变
+    bool m_smoothUpscaling = true;
     quint64 m_generation = 0;
 };
+
+// 任务级结构（非每像素热路径）：上界断言防回归，非精确尺寸（ABI 相关）
+static_assert(sizeof(ScalerRequest) <= 64, "ScalerRequest 体积膨胀：检查新增成员是否必要");
 
 // Qt 元类型（仍然安全）
 Q_DECLARE_METATYPE(ScalerRequest)

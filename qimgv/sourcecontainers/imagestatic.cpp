@@ -1,4 +1,5 @@
 #include "imagestatic.h"
+#include "settings.h"
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
@@ -6,28 +7,22 @@
 #include <QImageReader>
 #include <QImageWriter>
 
-ImageStatic::ImageStatic(QString path)
-    : Image(std::move(path))
-{
-    loadImage();
-}
-
-ImageStatic::ImageStatic(std::unique_ptr<DocumentInfo> info)
+ImageStatic::ImageStatic(std::unique_ptr<DocumentInfo> info, int allocationLimitMB)
     : Image(std::move(info))
 {
-    loadImage();
+    loadWith(allocationLimitMB);
 }
 
-void ImageStatic::load() {
+void ImageStatic::loadWith(int allocationLimitMB) {
     if(isLoaded()) {
         return;
     }
-    
+
     const auto mimeType = mDocInfo->mimeType().name();
     if(mimeType == "image/vnd.microsoft.icon") {
         loadICO();
     } else {
-        loadGeneric();
+        loadGeneric(allocationLimitMB);
     }
 }
 
@@ -44,10 +39,10 @@ static int transformationToExifOrientation(QImageIOHandler::Transformations t) {
     return 1;
 }
 
-void ImageStatic::loadGeneric() {
+void ImageStatic::loadGeneric(int allocationLimitMB) {
     QImageReader reader(mPath);
 
-    reader.setAllocationLimit(settings->memoryAllocationLimit());
+    reader.setAllocationLimit(allocationLimitMB);
 
     // 禁用 Qt 自动方向处理，统一由我们自己控制
     reader.setAutoTransform(false);
@@ -91,6 +86,9 @@ void ImageStatic::loadGeneric() {
 
     this->image = std::make_shared<const QImage>(std::move(image));
     mLoaded = true;
+    // ⭐ 同步喂给 DocumentInfo（含最终显示尺寸），面板 getExifTags 直接复用，不再二次 QImageReader
+    if(mDocInfo)
+        mDocInfo->setCachedTextMetadata(mTextMetadata, this->image->size());
 }
 
 void ImageStatic::loadICO() {
@@ -134,6 +132,10 @@ void ImageStatic::loadICO() {
 
     image = std::make_shared<const QImage>(std::move(img));
     mLoaded = true;
+    // ⭐ 与 loadGeneric 一致：解码期喂给 DocumentInfo，面板 getExifTags 不再在
+    //    GUI 线程兜底打开文件。ICO 无文本元数据，只需带上实际解码帧的尺寸供 "Dimensions"
+    if(mDocInfo)
+        mDocInfo->setCachedTextMetadata({}, image->size());
 }
 
 QString ImageStatic::generateHash(QStringView str) noexcept {
@@ -277,7 +279,9 @@ void ImageStatic::getPixmap(QPixmap& outPixmap) const {
         return;
     }
 
-    mCachedPixmap = QPixmap::fromImage(img);
+    mCachedPixmap = (img.format() == QImage::Format_ARGB32_Premultiplied)
+                        ? QPixmap::fromImage(img, Qt::NoFormatConversion)  // 已是 pixmap 首选格式，省一次整图格式转换
+                        : QPixmap::fromImage(img);
     mCachedPixmapKey = key;
     outPixmap = mCachedPixmap;
 }

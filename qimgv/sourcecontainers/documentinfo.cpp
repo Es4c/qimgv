@@ -1,5 +1,5 @@
 #include "documentinfo.h"
-#include <QSet>
+#include "videoformats.h"
 #include <QtEndian>
 
 using namespace Qt::StringLiterals;
@@ -42,7 +42,7 @@ const QHash<QString, QString>& DocumentInfo::getKeyMapping() {
 
 // ====================== ctor ======================
 
-DocumentInfo::DocumentInfo(const QString &path) {
+DocumentInfo::DocumentInfo(const QString &path, bool jxlAnimation, bool videoPlayback) {
     fileInfo.setFile(path);
 
     if(!fileInfo.isFile()) {
@@ -50,7 +50,7 @@ DocumentInfo::DocumentInfo(const QString &path) {
         return;
     }
 
-    detectFormat();
+    detectFormat(jxlAnimation, videoPlayback);
 }
 
 // ====================== getters ======================
@@ -69,7 +69,7 @@ void DocumentInfo::refresh() { fileInfo.refresh(); }
 
 // ====================== detect ======================
 
-void DocumentInfo::detectFormat() {
+void DocumentInfo::detectFormat(bool jxlAnimation, bool videoPlayback) {
 
     if(mDocumentType != NONE)
         return;
@@ -165,7 +165,7 @@ void DocumentInfo::detectFormat() {
         QImageReader reader(fileInfo.absoluteFilePath(), "jxl");
         mDocumentType = reader.supportsAnimation() ? ANIMATED : STATIC;
 
-        if(mDocumentType == ANIMATED && !settings->jxlAnimation()) {
+        if(mDocumentType == ANIMATED && !jxlAnimation) {
             mDocumentType = NONE;
             qDebug() << "animated jxl disabled";
         }
@@ -180,11 +180,6 @@ void DocumentInfo::detectFormat() {
         mFormat = "bmp";
         mDocumentType = STATIC;
 
-    } else if(settings->videoPlayback() && settings->videoFormats().contains(mimeName)) {
-
-        mDocumentType = VIDEO;
-        mFormat = settings->videoFormats().value(mimeName);
-
     } else {
 
         mFormat = suffix;
@@ -192,21 +187,19 @@ void DocumentInfo::detectFormat() {
         if(QStringView(mFormat).compare(u"jfif", Qt::CaseInsensitive) == 0)
             mFormat = "jpg";
 
-        if(settings->videoPlayback()) {
+        if(videoPlayback) {
 
-            static const QSet<QByteArray> videoSuffixes = [](){
-                QSet<QByteArray> set;
-                const auto formats = settings->videoFormats().values();
-                set.reserve(formats.size());
-                for(const auto &fmt : formats)
-                    set.insert(fmt);
-                return set;
-            }();
-
-            if(videoSuffixes.contains(suffix))
+            // 视频表/后缀表均为进程级常量（videoformats.h），并发只读安全；
+            // 单次 constFind 兼顾命中判定与取值，避免 contains+value 两次查找
+            const auto &table = videoFormatTable();
+            if(const auto it = table.constFind(mimeName); it != table.constEnd()) {
                 mDocumentType = VIDEO;
-            else
+                mFormat = it.value();
+            } else if(videoFormatSuffixes().contains(suffix)) {
+                mDocumentType = VIDEO;
+            } else {
                 mDocumentType = STATIC;
+            }
 
         } else {
             mDocumentType = STATIC;
@@ -254,7 +247,9 @@ bool DocumentInfo::detectAnimatedWebP() {
     if (std::memcmp(buf.constData() + 12, "VP8X", 4) != 0)
         return false;
 
-    return buf[20] & 0x02;
+    // VP8X flags: bit1 = 动画标志。按无符号读取，避免 char 参与带符号位运算
+    const unsigned flags = static_cast<unsigned char>(buf[20]);
+    return (flags & 0x02u) != 0;
 }
 
 bool DocumentInfo::detectAnimatedAvif() {
@@ -304,6 +299,13 @@ QString DocumentInfo::formatMetadataValue(const QString &key,const QVariant &val
     return value.toString();
 }
 
+void DocumentInfo::setCachedTextMetadata(QHash<QString, QString> metadata, QSize imageSize) {
+    // ⭐ 解码期写入，GUI 线程首次 getExifTags 前已完成（Image 构造后才进缓存/面板）
+    mCachedRawText = std::move(metadata);
+    mCachedImageSize = imageSize;
+    mHasCachedRaw = true;
+}
+
 void DocumentInfo::loadExifTags() const {
 
     if(exifLoaded)
@@ -312,12 +314,41 @@ void DocumentInfo::loadExifTags() const {
     exifLoaded = true;
     exifTags.clear();
 
+    const auto &mapping = getKeyMapping();
+
+    // ⭐ 优先复用解码期缓存，不再二次 QImageReader 打开+解析
+    if(mHasCachedRaw) {
+        for(auto it = mCachedRawText.constBegin(); it != mCachedRawText.constEnd(); ++it) {
+            const QString &key = it.key();
+            const QString &value = it.value();
+            if(value.isEmpty())
+                continue;
+            QString displayKey = mapping.value(key, key);
+            QString formattedValue = formatMetadataValue(key, value);
+            if(key == u"UserComment"_s && formattedValue.startsWith(u"charset="_s)) {
+                qsizetype spaceIndex = formattedValue.indexOf(u' ');
+                if(spaceIndex > 0)
+                    formattedValue = formattedValue.mid(spaceIndex + 1);
+            }
+            exifTags.try_emplace(displayKey, std::move(formattedValue));
+        }
+        if(!exifTags.isEmpty())
+            return;
+        // 缓存为空（如 PNG 无文本块）用解码期尺寸填充，不再二次打开文件
+        if(mCachedImageSize.isValid()) {
+            exifTags.insert(
+                QObject::tr("Dimensions"),
+                QString("%1 x %2").arg(mCachedImageSize.width()).arg(mCachedImageSize.height())
+            );
+        }
+        return;
+    }
+
     QImageReader reader(fileInfo.absoluteFilePath());
 
     if(!reader.canRead())
         return;
 
-    const auto &mapping = getKeyMapping();
     const QStringList textKeys = reader.textKeys();
 
     for(const QString &key : textKeys) {

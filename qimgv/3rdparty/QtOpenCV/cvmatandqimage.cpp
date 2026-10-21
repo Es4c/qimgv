@@ -169,11 +169,12 @@ cv::Mat image2Mat(const QImage &img, int requiredType, MatColorOrder requiredOrd
                     out = cv::Mat(mat.rows, mat.cols, CV_MAKE_TYPE(mat.depth(), 1));
                     if (mat.depth() == CV_8U) {
                         // 系数与 OpenCV 8U RGB2GRAY 一致：(4899R + 9617G + 1868B + 8192) >> 14
+                        // 常量用无符号，避免 uchar 提升为 int 后的带符号位运算/右移
                         for (int r = 0; r < mat.rows; ++r) {
                             const uchar *s = mat.ptr<uchar>(r);
                             uchar *d = out.ptr<uchar>(r);
                             for (int c = 0; c < mat.cols; ++c) {
-                                d[c] = static_cast<uchar>((4899 * s[1] + 9617 * s[2] + 1868 * s[3] + 8192) >> 14);
+                                d[c] = static_cast<uchar>((4899u * s[1] + 9617u * s[2] + 1868u * s[3] + 8192u) >> 14u);
                                 s += 4;
                             }
                         }
@@ -370,7 +371,7 @@ QImage mat2Image(const cv::Mat &mat, MatColorOrder order, QImage::Format formatH
         cv::Mat conv;
         double scale = (tmp.depth() == CV_16U) ? 1.0/255.0 : 255.0;
         tmp.convertTo(conv, CV_8UC(tmp.channels()), scale);
-        tmp = conv;
+        tmp = std::move(conv);
     }
 
     QImage img = mat2Image_shared(tmp, formatHint);

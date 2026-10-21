@@ -3,16 +3,13 @@
 #include <QScopeGuard>
 
 DirectoryModel::DirectoryModel(QObject *parent)
-    : QObject(parent), fileListSource(SOURCE_DIRECTORY) {
-    scaler = new Scaler(&cache);
+    : QObject(parent) {
+    scaler = new Scaler();
 
     connect(&dirManager, &DirectoryManager::fileRemoved, this, &DirectoryModel::onFileRemoved);
     connect(&dirManager, &DirectoryManager::fileAdded, this, &DirectoryModel::onFileAdded);
     connect(&dirManager, &DirectoryManager::fileRenamed, this, &DirectoryModel::onFileRenamed);
     connect(&dirManager, &DirectoryManager::fileModified, this, &DirectoryModel::onFileModified);
-    connect(&dirManager, &DirectoryManager::dirRemoved, this, &DirectoryModel::dirRemoved);
-    connect(&dirManager, &DirectoryManager::dirAdded, this, &DirectoryModel::dirAdded);
-    connect(&dirManager, &DirectoryManager::dirRenamed, this, &DirectoryModel::dirRenamed);
     connect(&dirManager, &DirectoryManager::loaded, this, &DirectoryModel::loaded);
     connect(&dirManager, &DirectoryManager::sortingChanged, this, &DirectoryModel::onSortingChanged);
     connect(&loader, &Loader::loadFinished, this, &DirectoryModel::onImageReady);
@@ -72,10 +69,6 @@ bool DirectoryModel::autoRefresh() {
     return dirManager.fileWatcherActive();
 }
 
-FileListSource DirectoryModel::source() {
-    return dirManager.source();
-}
-
 const QString DirectoryModel::directoryPath() const {
     return dirManager.directoryPath();
 }
@@ -90,6 +83,10 @@ bool DirectoryModel::containsDir(const QString &dirPath) const {
 
 bool DirectoryModel::isEmpty() const {
     return dirManager.isEmpty();
+}
+
+bool DirectoryModel::isScanning() const {
+    return dirManager.isScanning();
 }
 
 const QString &DirectoryModel::firstFile() const {
@@ -111,6 +108,10 @@ const QString &DirectoryModel::prevOf(const QString &filePath) const {
 // -----------------------------------------------------------------------------
 bool DirectoryModel::forceInsert(const QString &filePath) {
     return dirManager.forceInsertFileEntry(filePath);
+}
+
+bool DirectoryModel::insertFile(const QString &filePath) {
+    return dirManager.insertFileEntry(filePath);
 }
 
 void DirectoryModel::setSortingMode(SortingMode mode) {
@@ -210,6 +211,11 @@ void DirectoryModel::unload(const QString &filePath) {
     cache.remove(filePath);
 }
 
+bool DirectoryModel::rekey(const QString &oldPath, const QString &newPath,
+                           const std::shared_ptr<Image> &authoritative) {
+    return cache.rekey(oldPath, newPath, authoritative);
+}
+
 bool DirectoryModel::loaderBusy() const {
     return loader.isBusy();
 }
@@ -220,9 +226,10 @@ void DirectoryModel::onImageReady(const std::shared_ptr<Image> &img, const QStri
         return;
     }
 
-    // ✅ 直接insert即可，内部自动处理存在的情况（原地更新 + 移到MRU头）
-    // 消除一次冗余的锁获取和原子引用计数操作
-    cache.insert(img);
+    // ✅ 直接insert即可，内部自动处理存在的情况（原地更新 + 移到MRU头）。
+    // 键用加载路径而不是 img->filePath()：目录模型是缓存键的唯一来源
+    // （见 Cache::insert 注释），扫描完成后 rekey 到枚举路径才不会分叉
+    cache.insert(path, img);
     emit imageReady(img, path);
 }
 
@@ -254,8 +261,7 @@ bool DirectoryModel::saveFile(const QString &filePath, const QString &destPath) 
                     dirManager.updateFileEntry(destPath);
                     emit fileModified(destPath);
                 } else if(dirManager.insertFileEntry(destPath)) {
-                    // 新文件已插入（insertFileEntry 内部会 emit fileAdded，
-                    // 此处不再 emit，避免 DirectoryPresenter 重复插入列表项）
+                    // 新文件已插入，insertFileEntry 内部已 emit fileAdded，此处不再重复 emit
                 }
             }
         }
@@ -274,13 +280,10 @@ void DirectoryModel::onFileAdded(const QString &filePath) {
 }
 
 void DirectoryModel::onFileModified(const QString &filePath) {
-    // updateFileEntry 仅在 modifyTime 变化时 emit（emit 前已完成 stat），
-    // 这里内联 reload 逻辑以避免 reload 内部再次调用 updateFileEntry 造成重复 stat；
-    // 探测用 contains 而非 get：随即就要 remove，避免 get 的原子引用计数与 LRU 访问队列开销
-    if (cache.contains(filePath)) {
-        cache.remove(filePath);
+    // ⭐ 单锁 take 替代 contains+remove+load 内 get 的三次加锁；
+    // 仅缓存命中时才同步重载，未命中无需动作（下次访问自然加载）
+    if(cache.take(filePath))
         load(filePath, false);
-    }
 
     emit fileModified(filePath);
 }
@@ -316,12 +319,18 @@ std::shared_ptr<Image> DirectoryModel::getImage(const QString &filePath) {
     return loader.load(filePath);
 }
 
+std::shared_ptr<Image> DirectoryModel::cachedImage(const QString &filePath) {
+    return cache.get(filePath);
+}
+
 void DirectoryModel::updateImage(const QString &filePath, const std::shared_ptr<Image> &img) {
     if(!containsFile(filePath))
         return;
 
-    // insert 返回"是否新增"：已存在则原地更新（返回 false），免去一次 contains 加锁查找
-    if(cache.insert(img))
+    // insert 返回"是否新增"：已存在则原地更新（返回 false），免去一次 contains 加锁查找。
+    // ⭐ 键必须用调用方给出的 filePath：rekey 之后缓存键是枚举路径，而 img 内部
+    // 仍保存加载时的路径，按对象路径插入会把旧键重新建出来（同一张图两份条目）
+    if(cache.insert(filePath, img))
         emit imageReady(img, filePath);
     else
         emit imageUpdated(filePath);
@@ -343,7 +352,7 @@ void DirectoryModel::load(const QString &filePath, bool asyncHint) {
 
     auto img = loader.load(filePath);
     if(img) {
-        cache.insert(img);
+        cache.insert(filePath, img);
         emit imageReady(img, filePath);
     } else {
         emit loadFailed(filePath);

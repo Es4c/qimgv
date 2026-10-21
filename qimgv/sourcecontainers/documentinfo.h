@@ -16,13 +16,13 @@
 #include <array>
 
 #include "utils/stuff.h"
-#include "settings.h"
 
 enum DocumentType { NONE, STATIC, ANIMATED, VIDEO };
 
 class DocumentInfo {
 public:
-    explicit DocumentInfo(const QString &path);
+    // 任意线程可调用：jxl/video 开关已由调用方在 GUI 线程快照，视频表为进程级常量
+    DocumentInfo(const QString &path, bool jxlAnimation, bool videoPlayback);
 
     ~DocumentInfo() = default;
 
@@ -45,6 +45,8 @@ public:
 
     void loadExifTags() const;
     const QHash<QString, QString>& getExifTags() const;
+    // ⭐ 解码期已读的文本元数据与尺寸直接复用，避免面板显示时二次 QImageReader 打开
+    void setCachedTextMetadata(QHash<QString, QString> metadata, QSize imageSize = {});
 
     bool isValid() const { return mDocumentType != NONE; }
 
@@ -57,6 +59,11 @@ private:
 
     mutable bool exifLoaded = false;
     mutable QHash<QString, QString> exifTags;
+    // ⭐ 解码线程已缓存的原始文本元数据与尺寸（ImageStatic::loadGeneric 写入），
+    // loadExifTags 优先使用，不再二次打开文件
+    mutable QHash<QString, QString> mCachedRawText;
+    mutable QSize mCachedImageSize;
+    mutable bool mHasCachedRaw = false;
 
     // ✅ 仅保留安全缓存（不会占文件句柄）
     mutable QByteArray mHeaderCache;
@@ -64,7 +71,7 @@ private:
 
     static const QHash<QString, QString>& getKeyMapping();
 
-    void detectFormat();
+    void detectFormat(bool jxlAnimation, bool videoPlayback);
 
     bool detectAPNG();
     bool detectAnimatedWebP();

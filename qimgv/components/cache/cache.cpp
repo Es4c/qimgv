@@ -1,8 +1,27 @@
 #include "cache.h"
+#include <algorithm>
+#include <utility>
 
-Cache::Cache(size_t maxSize)
+Cache::Cache(size_t maxSize, size_t maxBytes)
     : mMaxCacheSize(maxSize)
+    , mMaxBytes(maxBytes)
 {
+}
+
+size_t Cache::estimateBytes(const std::shared_ptr<Image> &img) noexcept {
+    // ⭐ 解码后 QImage 真实像素占用为准，避免按个数淘汰时 20 张高像素即 OOM
+    if(img) {
+        if(auto qimg = img->getImage()) {
+            const qsizetype bytes = qimg->sizeInBytes();
+            if(bytes > 0)
+                return static_cast<size_t>(bytes);
+        }
+        // 动图/未就绪兜底：至少按文件大小计，避免 0 字节条目永不淘汰
+        const qint64 fileBytes = img->fileSize();
+        if(fileBytes > 0)
+            return static_cast<size_t>(fileBytes);
+    }
+    return 1024ULL * 1024ULL;
 }
 
 bool Cache::contains(const QString &path) const {
@@ -11,6 +30,15 @@ bool Cache::contains(const QString &path) const {
 }
 
 std::shared_ptr<Image> Cache::get(const QString &path) {
+    // ⭐ 读多写少：先共享锁探查，已在 MRU 头则直接返回，省掉每次命中的写锁
+    {
+        std::shared_lock lock(mRWLock);
+        auto it = items.find(path);
+        if(it == items.end())
+            return nullptr;
+        if(it.value() == lruList.begin())
+            return it.value()->item;
+    }
     std::unique_lock lock(mRWLock);
 
     auto it = items.find(path);
@@ -21,25 +49,127 @@ std::shared_ptr<Image> Cache::get(const QString &path) {
     return it.value()->item;
 }
 
-bool Cache::insert(const std::shared_ptr<Image> &img) {
-    if (!img) return false;
+std::shared_ptr<Image> Cache::take(const QString &path) {
+    // ⭐ 单锁 get+erase，供 onFileModified 合并 contains+remove+get 三次加锁
+    std::unique_lock lock(mRWLock);
+    auto it = items.find(path);
+    if(it == items.end())
+        return nullptr;
+    // move 而非拷贝：零引用计数操作；返回的临时对象在调用处、锁释放后析构，
+    // 避免 Image 在临界区内释放。调用者若只判空，移动本身无额外成本。
+    auto img = std::move(it.value()->item);
+    mCurrentBytes -= it.value()->bytes;
+    lruList.erase(it.value());
+    items.erase(it);
+    return img;
+}
+
+bool Cache::rekey(const QString &oldPath, const QString &newPath,
+                  const std::shared_ptr<Image> &authoritative) {
+    if(newPath.isEmpty())
+        return false;
+    if(oldPath == newPath)
+        return true;
+
+    // 兜底对象的字节数在锁外估算（与 insert 一致：只读已解码尺寸/文件大小，不解码）
+    const size_t authBytes = authoritative ? estimateBytes(authoritative) : 0;
+    // 被覆盖的对象在锁外析构（与 take() 同一约定）：Image 释放可能回收大块像素
+    // 缓冲、停止解码器，不能延长缓存临界区
+    [[maybe_unused]] std::shared_ptr<Image> displaced;
+
+    {
+        std::unique_lock lock(mRWLock);
+
+        auto it = items.find(oldPath);
+        if(it != items.end()) {
+            // 链表节点就地改键（迭代器在 erase/insert 之间保持有效），LRU 位置不变
+            ListIt node = it.value();
+            const size_t bytes = node->bytes;
+
+            auto existing = items.find(newPath);
+            if(existing == items.end()) {
+                items.erase(it);
+                node->key = newPath;
+                items.insert(newPath, node);
+                return true;
+            }
+
+            // 新键已被占用。若只是同一对象的另一种拼写（别名），直接丢旧键；
+            // 若是另一对象，以被改键的对象为准覆盖 —— 调用方要锚定的正是它，
+            // 保留目标对象会让 cachedImage(newPath) 返回另一份像素。
+            ListIt target = existing.value();
+            if(target->item != node->item) {
+                const size_t targetBytes = target->bytes;
+                displaced = std::move(target->item);
+                target->item = std::move(node->item);
+                target->bytes = bytes;
+                mCurrentBytes -= targetBytes;
+                mCurrentBytes += bytes;
+                moveToFront(target);
+            }
+            // 旧键无论别名还是被覆盖的冲突条目都要删除，且只扣一次字节
+            mCurrentBytes -= bytes;
+            lruList.erase(node);
+            items.erase(it);
+            return true;
+        }
+
+        // 旧键不在缓存：加载仍在途（不凭空造对象），或条目已被淘汰/缓存禁用而对象
+        // 仍被调用方持有。后者用 authoritative 回填规范键，不重新解码。
+        if(!authoritative)
+            return false;
+
+        auto existing = items.find(newPath);
+        if(existing == items.end()) {
+            lruList.push_front({newPath, authoritative, authBytes});
+            items.insert(newPath, lruList.begin());
+            mCurrentBytes += authBytes;
+        } else {
+            ListIt target = existing.value();
+            if(target->item != authoritative) {
+                const size_t targetBytes = target->bytes;
+                displaced = std::move(target->item);
+                target->item = authoritative;
+                target->bytes = authBytes;
+                mCurrentBytes -= targetBytes;
+                mCurrentBytes += authBytes;
+            }
+            // 当前图应待在 MRU 头（回填后马上会被 get/缩放命中）
+            moveToFront(target);
+        }
+        if(mCurrentBytes > mMaxBytes || items.size() > mMaxCacheSize)
+            evictLRUItems();
+        return true;
+    }
+}
+
+bool Cache::insert(const QString &key, const std::shared_ptr<Image> &img) {
+    if (!img || key.isEmpty()) return false;
+
+    // ⭐ 字节估算（getImage() 返回已解码指针 + sizeInBytes，无解码/无 I/O）移到写锁之外，
+    // 缩短临界区：估算不再占用锁，锁内只做 map/链表更新
+    const size_t bytes = estimateBytes(img);
 
     std::unique_lock lock(mRWLock);
 
-    const QString &path = img->filePath();
-
-    auto it = items.find(path);
+    auto it = items.find(key);
     if (it != items.end()) {
         // 原地更新，保持原有返回语义（false = 已存在，非新增）
+        mCurrentBytes -= it.value()->bytes;
         it.value()->item = img;
+        it.value()->bytes = bytes;
+        mCurrentBytes += bytes;
         moveToFront(it.value());
+        if (mCurrentBytes > mMaxBytes || items.size() > mMaxCacheSize)
+            evictLRUItems();
         return false;
     }
 
-    lruList.push_front({path, img});
-    items.insert(path, lruList.begin());
+    lruList.push_front({key, img, bytes});
+    items.insert(key, lruList.begin());
+    mCurrentBytes += bytes;
 
-    if (items.size() > mMaxCacheSize) {
+    if (mCurrentBytes > mMaxBytes || items.size() > mMaxCacheSize) {
         evictLRUItems();
     }
 
@@ -52,6 +182,7 @@ void Cache::remove(const QString &path) {
     auto it = items.find(path);
     if (it == items.end()) return;
 
+    mCurrentBytes -= it.value()->bytes;
     lruList.erase(it.value());
     items.erase(it);
 }
@@ -60,6 +191,7 @@ void Cache::clear() {
     std::unique_lock lock(mRWLock);
     lruList.clear();
     items.clear();
+    mCurrentBytes = 0;
 }
 
 void Cache::moveToFront(ListIt it) {
@@ -68,9 +200,19 @@ void Cache::moveToFront(ListIt it) {
 }
 
 void Cache::evictLRUItems() {
-    while (items.size() > mMaxCacheSize) {
+    // ⭐ 超大单图允许独占一项，避免大于上限的图片永远 miss 而反复解码；
+    // mMaxCacheSize == 0 视为禁用，此时清空
+    if(mMaxCacheSize == 0) {
+        lruList.clear();
+        items.clear();
+        mCurrentBytes = 0;
+        return;
+    }
+    while (lruList.size() > 1 &&
+           (items.size() > mMaxCacheSize || mCurrentBytes > mMaxBytes)) {
         auto lastIt = std::prev(lruList.end());
 
+        mCurrentBytes -= lastIt->bytes;
         items.remove(lastIt->key);
         lruList.pop_back(); // O(1)
     }

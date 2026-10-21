@@ -34,15 +34,19 @@ public:
     void reset(HANDLE h = INVALID_HANDLE_VALUE) noexcept { close(); handle_ = h; }
 
     void close() noexcept {
-        if (handle_ != INVALID_HANDLE_VALUE) {
+        // CreateEventW 失败返回 NULL，CreateFileW 失败返回 INVALID_HANDLE_VALUE，
+        // 两者都不能当有效句柄关闭。
+        if (handle_ != INVALID_HANDLE_VALUE && handle_ != nullptr) {
             CloseHandle(handle_);
-            handle_ = INVALID_HANDLE_VALUE;
         }
+        handle_ = INVALID_HANDLE_VALUE;
     }
 
     HANDLE get() const noexcept { return handle_; }
     HANDLE release() noexcept { return std::exchange(handle_, INVALID_HANDLE_VALUE); }
-    explicit operator bool() const noexcept { return handle_ != INVALID_HANDLE_VALUE; }
+    explicit operator bool() const noexcept {
+        return handle_ != INVALID_HANDLE_VALUE && handle_ != nullptr;
+    }
 
 private:
     HANDLE handle_ = INVALID_HANDLE_VALUE;
@@ -50,6 +54,7 @@ private:
 
 // 一次 ReadDirectoryChangesW 返回的单个通知条目
 struct NotifyEvent {
+    QString directoryPath;   // 产生该通知的监视目录（切换路径后仍能正确归属）
     QString fileName;
     DWORD action;
 };
@@ -61,20 +66,38 @@ public:
     explicit WindowsWorker();
     ~WindowsWorker() override = default;
     void run() override;
-    void setRunning(bool running);
+    void setRunning(bool running) override;
     void setWatchPath(const QString& path);
     // 这些方法可被任意线程直接调用，句柄通过原子变量暴露，路径经互斥锁保护
     void requestDirectoryHandle(const QString& path);
-    void cancelIo();
+    bool isWatchPathReady(const QString& path) const;
 
 signals:
     // ⭐ 批量派发，避免每个事件一个排队信号
     void notifyEvents(const QVector<NotifyEvent>& events);
+    // ⭐ 只有 ReadDirectoryChangesW 已成功发起后才发出：该次 arm 之后的变化由它接收
+    void watchPathReady(const QString& directoryPath);
+    void watchPathFailed(const QString& directoryPath);
+    // 系统通知缓冲溢出（ERROR_NOTIFY_ENUM_DIR）：部分变化已丢失，接收方需重扫
+    void watchPathOverflowed(const QString& directoryPath);
     void finished();
     void started();
 
 private:
     HANDLE openDirectoryHandle(const QString& path);
+    // ⭐ run() 拆分：每 helper 单一职责，run 仅保留主循环编排
+    bool ensureInitialHandle(QString &currentPath);
+    // 返回 false 表示应退出主循环
+    bool handleRestart(QString &currentPath, int &quietReads);
+    // 发起一次异步 ReadDirectoryChangesW；成功返回时监视已经生效
+    bool armRead(const QString& directoryPath);
+    void cancelPendingRead();
+    void setReadyPath(const QString& path);
+    enum class WaitResult { Ok, Stop, Retry, Overflow };
+    WaitResult waitOnce(DWORD &bytesReturned);
+    QVector<NotifyEvent> parseBatch(DWORD bytesReturned, const QString &directoryPath);
+    static void dedupModified(QVector<NotifyEvent> &batch);
+    void emitAndMaybeShrink(const QVector<NotifyEvent> &batch, DWORD bytesReturned, int &quietReads);
 
     ScopedHandle hDirectory;
     std::atomic<HANDLE> activeHandle{INVALID_HANDLE_VALUE};
@@ -82,7 +105,18 @@ private:
     QByteArray buffer;
     bool networkBufferCapped = false;   // ⭐ 网络目录(SMB)缓冲上限 64KB，仅 worker 线程访问
     std::atomic<bool> needsRestart{false};
-    QMutex pathMutex;
+    // 异步读取：hEvent 用于等待完成，wakeEvent 用于 stop/restart 立即唤醒
+    ScopedHandle readEvent;
+    ScopedHandle wakeEvent;
+    OVERLAPPED overlapped{};
+    // worker 线程写入，GUI 线程通过 isWatchPathReady() 读取。
+    // 一次读取完成后必须先清零；readyPath 只有在当前读仍挂起时才算有效。
+    std::atomic<bool> readPending{false};
+    mutable QMutex pathMutex;           // 保护 pendingPath、readyPath 与 announceReady
+    QString readyPath;                  // 已成功挂上监视的目录，受 pathMutex 保护
+    // 下一次成功 arm 后是否发 watchPathReady。请求方只在状态可能已失效时
+    // 需要信号；正常每批事件完成后重新 arm 不必向 GUI 重复投递。
+    bool announceReady = true;           // 受 pathMutex 保护
 };
 
 #endif // WINDOWSWORKER_H

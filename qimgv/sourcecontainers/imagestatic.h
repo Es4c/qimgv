@@ -15,8 +15,8 @@ class ImageStatic : public Image {
     Q_DISABLE_COPY_MOVE(ImageStatic)
 
 public:
-    explicit ImageStatic(QString path);
-    explicit ImageStatic(std::unique_ptr<DocumentInfo> info);
+    // 任意线程可调用：解码限额已由调用方在 GUI 线程快照
+    ImageStatic(std::unique_ptr<DocumentInfo> info, int allocationLimitMB);
     ~ImageStatic() override = default;
     
     using Image::save;
@@ -42,8 +42,8 @@ public slots:
     bool save(QString destPath) override;
 
 private:
-    void load() override;
-    void loadGeneric();
+    void loadWith(int allocationLimitMB);
+    void loadGeneric(int allocationLimitMB);
     void loadICO();
     const QImage &currentImage() const noexcept;
     static QString generateHash(QStringView str) noexcept;

@@ -5,13 +5,13 @@
 #include <QMutex>
 #include <QClipboard>
 #include <QDrag>
-#include <QFileSystemModel>
 #include <QDesktopServices>
 #include <QTranslator>
 #include <QSettings>
 #include <QHash>
 #include "appversion.h"
 #include "settings.h"
+#include "components/directorymanager/directorymanager.h"
 #include "components/directorymodel.h"
 #include "components/scriptmanager/scriptmanager.h"
 #include "gui/mainwindow.h"
@@ -23,11 +23,24 @@
 #include <malloc.h>
 #endif
 
+// 目录异步扫描后需要打开的目标图（切目录/以目录启动时用）
+enum class PendingOpen {
+    None,
+    First,
+    Last
+};
+
 struct State {
     bool hasActiveImage = false;
-    bool delayModel = false;
+    // ⭐ 目录枚举是异步的：列表就绪（onModelLoaded）后才打开首图/末图，
+    // 取代原先"先开单文件、再延迟 40ms 扫描目录"的补丁式时序
+    PendingOpen pendingOpen = PendingOpen::None;
     QString currentFilePath = "";
     QString directoryPath = "";
+    // 相邻目录递归查找的上界：最近一次显式打开（loadPath）的目录的父目录。
+    // next/prevDirectory 只在该目录的子树内遍历，避免一路上溯扫描整个磁盘。
+    // 为空或不包含当前目录时，退化为当前目录的父目录。
+    QString browseRoot = "";
     std::shared_ptr<Image> currentImg;
     bool slideshowActive = false;
     bool shuffle = false;
@@ -44,8 +57,7 @@ class Core : public QObject {
 public:
     Core();
     void showGui();
-    QString findAdjacentDirectoryWithImages(const QString &currentDirPath, bool forward);
-    QString findImageDirDescending(const QString &dirPath, bool forward);
+
 signals:
     void firstImageReady();
 
@@ -71,14 +83,19 @@ private:
 
     // components
     std::shared_ptr<DirectoryModel> model;
+    // next/prevDirectory 复用：用于列出任意目录的（已排序）子目录；
+    // 内部按目录 mtime 缓存，同一目录重复查询不重扫
+    DirectoryManager siblingDirs;
 
     QString lastClipboardSaveFormat = "jxl";
 
     void rotateByDegrees(int degrees);
     void reset();
     bool setDirectory(const QString& path);
-    void doDirectorySwitch();
-    
+    // 按目录树前序（父目录先于其子目录、同级按排序设置）查找下一个/上一个
+    // “直接包含受支持图片”的目录；没有则返回空串。包含子目录的递归查找。
+    QString findAdjacentDirectory(bool forward);
+
     QMimeData *getMimeDataForImage(const std::shared_ptr<Image>& img, MimeDataTarget target);
     QTranslator *translator = nullptr;
 
@@ -93,16 +110,10 @@ private:
 
     Randomizer randomizer;
     void syncRandomizer();
+    // 排序会改变文件下标，而乱序置换建立在下标之上；因此在排序前后重映射置换
+    void applySortingMode(SortingMode mode);
+    void remapShuffleIndices(const QList<QString>& previousOrder);
     
-        // Cache size=1: when we jump forward from A→B, store {B, A} so that
-    // prevDirectory() can skip the recursive scan when going B→A.
-    // key = nextDir path, value = prevDir path (the dir we came from)
-    QPair<QString, QString> prevDirCache; // (nextDir, fromDir)
-    QPair<QString, QString> nextDirCache; // (currentDir, nextDir)
-
-    QTimer dirSwitchTimer;
-    int pendingDirSwitch = 0; // -1 prev, 0 none, 1 next
-    bool pendingSelectLast = false;
 
     void attachModel(std::unique_ptr<DirectoryModel> _model);
     const QString &selectedPath();
@@ -165,6 +176,7 @@ private slots:
     void onModelItemReady(const std::shared_ptr<Image>& img, const QString& path);
     void onModelItemUpdated(const QString& fileName);
     void onModelSortingChanged(SortingMode mode);
+    void onToggleImageInfo();
     void onLoadFailed(const QString &path);
     void rotateLeft();
     void rotateRight();
@@ -225,5 +237,6 @@ private slots:
     void prevDirectory(bool selectLast);
     void prevDirectory();
     void print();
-    void modelDelayLoad();
+    // 目录列表就绪后打开 state.pendingOpen 指定的图片；空目录则补发 firstImageReady
+    void openPendingImage();
 };

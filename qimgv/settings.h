@@ -11,7 +11,7 @@
 #include <QPalette>
 #include <QDir>
 #include <QKeySequence>
-#include <QMap>
+#include <QHash>
 #include <QFont>
 #include <QFontMetrics>
 #include <QVersionNumber>
@@ -223,8 +223,6 @@ public:
     bool confirmTrash();
     void setConfirmTrash(bool mode);
 
-    const QMultiMap<QByteArray, QByteArray> &videoFormats() const;
-
     bool printLandscape();
     void setPrintLandscape(bool mode);
     bool printPdfDefault();
@@ -286,7 +284,6 @@ private:
     std::unique_ptr<QDir> mTmpDir;
     std::unique_ptr<QDir> mConfDir;
     ColorScheme mColorScheme;
-    QMultiMap<QByteArray, QByteArray> mVideoFormatsMap; // [mimetype, format]
     
     // 缓存支持的格式，避免重复计算
     mutable QList<QByteArray> mCachedSupportedFormats;
@@ -326,10 +323,20 @@ private:
     mutable bool mPanelPreviewsSizeCacheValid;
     mutable int mCachedImageSaveQuality;
     mutable bool mImageSaveQualityCacheValid;
+    mutable int mCachedMemoryAllocationLimit;
+    mutable bool mMemoryAllocationLimitCacheValid;
 
     // 缓存布尔设置值（翻页热路径 usePreloader）
     mutable bool mCachedUsePreloader;
     mutable bool mUsePreloaderCacheValid;
+    mutable bool mCachedUnlockMinZoom;
+    mutable bool mUnlockMinZoomCacheValid;
+
+    // 缓存布尔设置值（缩放/加载热路径：smoothUpscaling 每次缩放请求、videoPlayback 每个加载任务）
+    mutable bool mCachedSmoothUpscaling;
+    mutable bool mSmoothUpscalingCacheValid;
+    mutable bool mCachedVideoPlayback;
+    mutable bool mVideoPlaybackCacheValid;
     
     // 缓存字符串列表
     mutable QStringList mCachedSavedPaths;
@@ -365,7 +372,6 @@ private:
     void createColorVariants();
 
     void setupCache();
-    void fillVideoFormats();
     void loadImageReaderFormatsFromDisk() const;
     void saveImageReaderFormatsToDisk() const;
 

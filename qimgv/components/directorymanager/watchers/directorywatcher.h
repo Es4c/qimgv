@@ -15,17 +15,29 @@ public:
     virtual void setWatchPath(const QString& watchPath);
     virtual QString watchPath() const;
     bool isObserving() const;
+    // 目标目录是否已经真正挂上监视（Windows 上指 ReadDirectoryChangesW 已成功
+    // 发起且当前仍在挂起等待）。扫描必须等到它返回 true 后再开始，否则切换目录
+    // 或读取完成到下一次 arm 之间的交接窗口内可能漏事件。
+    virtual bool isWatchPathReady(const QString& path) const;
 
 public Q_SLOTS:
-    void observe();
-    void stopObserving();
-    void requestWatchPath(const QString& path);
+    virtual void observe();
+    virtual void stopObserving();
+    virtual void requestWatchPath(const QString& path);
 
 Q_SIGNALS:
-    void fileCreated(const QString& filePath);
-    void fileDeleted(const QString& filePath);
-    void fileRenamed(const QString& oldPath, const QString& newPath);
-    void fileModified(const QString& filePath);
+    // ⭐ 事件必须携带产生它的目录：平滑切换监视路径时，旧目录的排队事件
+    // 可能在新路径生效后才派发，仅凭文件名会被错误地归到新目录。
+    void fileCreated(const QString& directoryPath, const QString& fileName);
+    void fileDeleted(const QString& directoryPath, const QString& fileName);
+    void fileRenamed(const QString& directoryPath, const QString& oldName, const QString& newName);
+    void fileModified(const QString& directoryPath, const QString& fileName);
+    // 监视已真正生效；DirectoryManager 收到后才启动目录扫描
+    void watchPathReady(const QString& directoryPath);
+    // 无法建立监视（目录不可打开/句柄失效）；扫描仍需继续，只是没有自动刷新
+    void watchPathFailed(const QString& directoryPath);
+    // 系统通知缓冲溢出，部分变化已丢失；目录管理器需要重扫校正
+    void watchPathOverflowed(const QString& directoryPath);
     void observingStarted();
     void observingStopped();
 

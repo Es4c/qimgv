@@ -13,7 +13,8 @@ public:
 
 public Q_SLOTS:
     virtual void run() = 0;               // 改为槽，允许跨线程调用
-    void setRunning(bool running) noexcept {
+    // 虚函数：具体 worker 需要在停止时唤醒 I/O / 清除就绪状态
+    virtual void setRunning(bool running) {
         isRunning.store(running, std::memory_order_release);
     }
 

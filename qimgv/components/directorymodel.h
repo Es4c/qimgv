@@ -21,11 +21,15 @@ public:
     const QString &fileNameAt(int index) const;
     bool containsFile(const QString &filePath) const;
     bool isEmpty() const;
+    // 目录枚举在 worker 线程进行：true 表示当前目录列表尚未就绪（loaded 未发出）
+    bool isScanning() const;
     const QString &nextOf(const QString &filePath) const;
     const QString &prevOf(const QString &filePath) const;
     const QString &firstFile() const;
     const QString &lastFile() const;
     bool forceInsert(const QString &filePath);
+    // 后缀校验后增量插入（用于显式打开不在当前列表中的文件）；内部会 emit fileAdded
+    bool insertFile(const QString &filePath);
     void copyFileTo(const QString &srcFile, const QString &destDirPath, bool force, FileOpResult &result);
     void moveFileTo(const QString &srcFile, const QString &destDirPath, bool force, FileOpResult &result);
     void renameEntry(const QString &oldFilePath, const QString &newName, bool force, FileOpResult &result);
@@ -36,9 +40,19 @@ public:
     bool loaderBusy() const;
     std::shared_ptr<Image> getImageAt(int index);
     std::shared_ptr<Image> getImage(const QString &filePath);
+    // 仅查缓存，绝不触发解码（GUI 线程 resize/滚轮等高频路径使用）
+    std::shared_ptr<Image> cachedImage(const QString &filePath);
     void updateImage(const QString &filePath, const std::shared_ptr<Image> &img);
     void setSortingMode(SortingMode mode);
     SortingMode sortingMode() const;
+    // 目录扫描完成后把图片缓存的键从用户传入路径改为枚举路径（Core::onModelLoaded），
+    // 否则按当前路径做的 isLoaded()/cachedImage() 精确查找会全部 miss。
+    // 被改键的对象是权威对象：新键若属于另一对象（同一文件的另一次加载），会被它覆盖，
+    // 保证成功后 cachedImage(newPath) 命中的就是当前显示的那个对象，不会留下两份条目。
+    // 旧键已被淘汰时用 authoritative（调用方仍持有、且确认属于该路径的对象）回填，
+    // 不重新解码；authoritative 为空则返回 false（加载仍在途，等 onModelItemReady 补）。
+    bool rekey(const QString &oldPath, const QString &newPath,
+               const std::shared_ptr<Image> &authoritative = nullptr);
     const QString directoryPath() const;
     void unload(const QString &filePath);
     bool isLoaded(int index) const;
@@ -53,16 +67,12 @@ public:
     bool saveFile(const QString &filePath);
     bool saveFile(const QString &filePath, const QString &destPath);
     bool containsDir(const QString &dirPath) const;
-    FileListSource source();
 
 signals:
     void fileRemoved(const QString &filePath, int index);
     void fileRenamed(const QString &fromPath, int indexFrom, const QString &toPath, int indexTo);
     void fileAdded(QString filePath);
     void fileModified(QString filePath);
-    void dirRemoved(QString dirPath, int index);
-    void dirRenamed(QString dirPath, int indexFrom, QString toPath, int indexTo);
-    void dirAdded(QString dirPath);
     void loaded(QString filePath);
     void loadFailed(const QString &path);
     void sortingChanged(SortingMode);
@@ -74,7 +84,6 @@ private:
     DirectoryManager dirManager;
     Loader loader;
     Cache cache;
-    FileListSource fileListSource;
 
 private slots:
     void onImageReady(const std::shared_ptr<Image> &img, const QString &path);

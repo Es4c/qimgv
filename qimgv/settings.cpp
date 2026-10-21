@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "sourcecontainers/videoformats.h"
 #include <QHash>
 #include <QFile>
 #include <QTextStream>
@@ -19,7 +20,6 @@ Settings::Settings(QObject *parent) : QObject(parent) {
     stateConf = std::make_unique<QSettings>(mConfDir->absolutePath() + "/savedState.ini", QSettings::IniFormat);
     themeConf = std::make_unique<QSettings>(mConfDir->absolutePath() + "/theme.ini", QSettings::IniFormat);
 #endif
-    fillVideoFormats();
     mFormatsCacheValid = false;
     mMimeTypesCacheValid = false;
     mFormatsFilterCacheValid = false;
@@ -35,7 +35,11 @@ Settings::Settings(QObject *parent) : QObject(parent) {
     mImageFitModeCacheValid = false;
     mPanelPreviewsSizeCacheValid = false;
     mImageSaveQualityCacheValid = false;
+    mMemoryAllocationLimitCacheValid = false;
     mUsePreloaderCacheValid = false;
+    mUnlockMinZoomCacheValid = false;
+    mSmoothUpscalingCacheValid = false;
+    mVideoPlaybackCacheValid = false;
     mSavedPathsCacheValid = false;
     mBookmarksCacheValid = false;
     mShortcutsCacheValid = false;
@@ -216,8 +220,8 @@ void Settings::loadStylesheet() {
         // --- apply -------------------------------------------------
         qApp->setStyleSheet(styleSheet);
         
-        // 缓存样式表
-        mCachedStylesheet = styleSheet;
+        // 缓存样式表（qApp->setStyleSheet() 已持有自己的副本，这里直接搬移避免再复制）
+        mCachedStylesheet = std::move(styleSheet);
         mStylesheetCacheValid = true;
     }
 }
@@ -274,19 +278,6 @@ void Settings::setColorScheme(ColorScheme scheme) {
 //------------------------------------------------------------------------------
 void Settings::setColorTid(int tid) {
     mColorScheme.tid = tid;
-}
-//------------------------------------------------------------------------------
-void Settings::fillVideoFormats() {
-    mVideoFormatsMap.insert("video/webm",       "webm");
-    mVideoFormatsMap.insert("video/mp4",        "mp4");
-    mVideoFormatsMap.insert("video/mp4",        "m4v");
-    mVideoFormatsMap.insert("video/mpeg",       "mpg");
-    mVideoFormatsMap.insert("video/mpeg",       "mpeg");
-    mVideoFormatsMap.insert("video/x-matroska", "mkv");
-    mVideoFormatsMap.insert("video/x-ms-wmv",   "wmv");
-    mVideoFormatsMap.insert("video/x-msvideo",  "avi");
-    mVideoFormatsMap.insert("video/quicktime",  "mov");
-    mVideoFormatsMap.insert("video/x-flv",      "flv");
 }
 //------------------------------------------------------------------------------
 QString Settings::mpvBinary() {
@@ -354,7 +345,7 @@ const QList<QByteArray> &Settings::supportedFormats() {
         mCachedSupportedFormats = mCachedImageReaderFormats;
         mCachedSupportedFormats << "jfif";
         if(videoPlayback())
-            mCachedSupportedFormats << mVideoFormatsMap.values();
+            mCachedSupportedFormats << videoFormatTable().values();
         mCachedSupportedFormats.removeAll("pdf");
         mFormatsCacheValid = true;
     }
@@ -395,7 +386,7 @@ const QStringList &Settings::supportedMimeTypes() {
         mCachedSupportedMimeTypes.clear();
         QList<QByteArray> mimeTypes = QImageReader::supportedMimeTypes();
         if(videoPlayback())
-            mimeTypes << mVideoFormatsMap.keys();
+            mimeTypes << videoFormatTable().keys();
         for(int i = 0; i < mimeTypes.count(); i++) {
             mCachedSupportedMimeTypes << QString(mimeTypes.at(i));
         }
@@ -406,7 +397,14 @@ const QStringList &Settings::supportedMimeTypes() {
 //------------------------------------------------------------------------------
 bool Settings::videoPlayback() {
 #ifdef USE_MPV
-    return settingsConf->value("videoPlayback", true).toBool();
+    // ⭐ 每个加载任务都会读取（loader.cpp）：QSettings::value 含互斥锁与键查找，缓存后仅一次布尔判断
+    if (mVideoPlaybackCacheValid) {
+        return mCachedVideoPlayback;
+    }
+
+    mCachedVideoPlayback = settingsConf->value("videoPlayback", true).toBool();
+    mVideoPlaybackCacheValid = true;
+    return mCachedVideoPlayback;
 #else
     return false;
 #endif
@@ -414,6 +412,7 @@ bool Settings::videoPlayback() {
 
 void Settings::setVideoPlayback(bool mode) {
     settingsConf->setValue("videoPlayback", mode);
+    mVideoPlaybackCacheValid = false;
     mFormatsCacheValid = false;
     mMimeTypesCacheValid = false;
     mFormatsFilterCacheValid = false;
@@ -515,10 +514,6 @@ void Settings::setVolume(int vol) {
 
 int Settings::volume() {
     return stateConf->value("volume", 100).toInt();
-}
-//------------------------------------------------------------------------------
-const QMultiMap<QByteArray, QByteArray> &Settings::videoFormats() const {
-    return mVideoFormatsMap;
 }
 //------------------------------------------------------------------------------
 int Settings::panelPreviewsSize() {
@@ -884,11 +879,19 @@ int Settings::slideshowInterval() {
 }
 //------------------------------------------------------------------------------
 bool Settings::smoothUpscaling() {
-    return settingsConf->value("smoothUpscaling", true).toBool();
+    // ⭐ 缩放请求热路径（core.cpp scalingRequest）：QSettings::value 含互斥锁与键查找，缓存后仅一次布尔判断
+    if (mSmoothUpscalingCacheValid) {
+        return mCachedSmoothUpscaling;
+    }
+
+    mCachedSmoothUpscaling = settingsConf->value("smoothUpscaling", true).toBool();
+    mSmoothUpscalingCacheValid = true;
+    return mCachedSmoothUpscaling;
 }
 
 void Settings::setSmoothUpscaling(bool mode) {
     settingsConf->setValue("smoothUpscaling", mode);
+    mSmoothUpscalingCacheValid = false;
 }
 //------------------------------------------------------------------------------
 bool Settings::expandImage() {
@@ -1231,16 +1234,24 @@ void Settings::setAutoResizeLimit(int percent) {
 }
 //------------------------------------------------------------------------------
 int Settings::memoryAllocationLimit() {
+    // ⭐ 图片解码热路径（每次加载前读取）：缓存后避免 QSettings 互斥锁与键查找
+    if (mMemoryAllocationLimitCacheValid) {
+        return mCachedMemoryAllocationLimit;
+    }
+
     int limit = settingsConf->value("memoryAllocationLimit", 1024).toInt();
     if(limit < 512)
         limit = 512;
     else if(limit > 8192)
         limit = 8192;
+    mCachedMemoryAllocationLimit = limit;
+    mMemoryAllocationLimitCacheValid = true;
     return limit;
 }
 
 void Settings::setMemoryAllocationLimit(int limitMB) {
     settingsConf->setValue("memoryAllocationLimit", limitMB);
+    mMemoryAllocationLimitCacheValid = false;
 }
 //------------------------------------------------------------------------------
 bool Settings::panelCenterSelection() {
@@ -1305,11 +1316,19 @@ void Settings::setZoomLevels(const QString &levels) {
 }
 //------------------------------------------------------------------------------
 bool Settings::unlockMinZoom() {
-    return settingsConf->value("unlockMinZoom", true).toBool();
+    // ⭐ 窗口 resize 热路径：缓存后避免每次 QSettings 互斥锁与键查找
+    if (mUnlockMinZoomCacheValid) {
+        return mCachedUnlockMinZoom;
+    }
+
+    mCachedUnlockMinZoom = settingsConf->value("unlockMinZoom", true).toBool();
+    mUnlockMinZoomCacheValid = true;
+    return mCachedUnlockMinZoom;
 }
 
 void Settings::setUnlockMinZoom(bool mode) {
     settingsConf->setValue("unlockMinZoom", mode);
+    mUnlockMinZoomCacheValid = false;
 }
 //------------------------------------------------------------------------------
 bool Settings::sortFolders() {

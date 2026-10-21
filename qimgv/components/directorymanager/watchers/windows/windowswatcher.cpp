@@ -13,6 +13,19 @@ WindowsWatcherPrivate::WindowsWatcherPrivate(WindowsWatcher* qq)
     // 排队连接需要 QVector<NotifyEvent> 的元类型
     qRegisterMetaType<QVector<NotifyEvent>>("QVector<NotifyEvent>");
     connect(windowsWorker, &WindowsWorker::notifyEvents, this, &WindowsWatcherPrivate::dispatchNotify);
+    connect(windowsWorker, &WindowsWorker::watchPathOverflowed,
+            this, &WindowsWatcherPrivate::discardPendingRenames);
+}
+
+void WindowsWatcherPrivate::discardPendingRenames(const QString& directoryPath)
+{
+    // 溢出可能丢掉某个 OLD 对应的 NEW；留着陈旧 OLD 会在后续 NEW 到达时
+    // 错配成假重命名。重扫会以磁盘状态重建列表，这些半截状态直接丢弃。
+    for (qsizetype i = renameOldQueue.size(); i > 0; --i) {
+        const qsizetype index = i - 1;
+        if (renameOldQueue.at(index).first == directoryPath)
+            renameOldQueue.removeAt(index);
+    }
 }
 
 void WindowsWatcherPrivate::dispatchNotify(const QVector<NotifyEvent>& events)
@@ -22,32 +35,42 @@ void WindowsWatcherPrivate::dispatchNotify(const QVector<NotifyEvent>& events)
     for (const NotifyEvent& ev : events) {
         switch (ev.action) {
         case FILE_ACTION_ADDED:
-            emit q->fileCreated(ev.fileName);
+            emit q->fileCreated(ev.directoryPath, ev.fileName);
             break;
 
         case FILE_ACTION_MODIFIED:
-            emit q->fileModified(ev.fileName);
+            emit q->fileModified(ev.directoryPath, ev.fileName);
             break;
 
         case FILE_ACTION_REMOVED:
-            emit q->fileDeleted(ev.fileName);
+            emit q->fileDeleted(ev.directoryPath, ev.fileName);
             break;
 
         case FILE_ACTION_RENAMED_OLD_NAME:
+            // 切换监视目录后，旧目录遗留的 OLD 永远等不到同目录的 NEW：
+            // 直接丢弃，避免与新目录的 NEW 错配出"假重命名"
+            while (!renameOldQueue.isEmpty()
+                   && renameOldQueue.head().first != ev.directoryPath)
+                renameOldQueue.dequeue();
             // ⭐ 队列上限：改名/移出目录只产生 OLD 而不会再有 NEW，长期累积会占内存。
-            // 挤出的最旧项视为已删除（该旧名字已不在监视目录中）
-            if (renameOldQueue.size() >= kMaxRenameQueueSize)
-                emit q->fileDeleted(renameOldQueue.dequeue());
-            renameOldQueue.enqueue(ev.fileName);
+            // 挤出的最旧项视为已删除（该旧名字已不在其监视目录中）
+            if (renameOldQueue.size() >= kMaxRenameQueueSize) {
+                const auto stale = renameOldQueue.dequeue();
+                emit q->fileDeleted(stale.first, stale.second);
+            }
+            renameOldQueue.enqueue({ev.directoryPath, ev.fileName});
             break;
 
         case FILE_ACTION_RENAMED_NEW_NAME:
+            while (!renameOldQueue.isEmpty()
+                   && renameOldQueue.head().first != ev.directoryPath)
+                renameOldQueue.dequeue();
             if (!renameOldQueue.isEmpty()) {
-                const QString oldName = renameOldQueue.dequeue();
-                emit q->fileRenamed(oldName, ev.fileName);
+                const auto oldEntry = renameOldQueue.dequeue();
+                emit q->fileRenamed(ev.directoryPath, oldEntry.second, ev.fileName);
             } else {
                 // fallback：极端情况下丢失 OLD，只当作创建处理
-                emit q->fileCreated(ev.fileName);
+                emit q->fileCreated(ev.directoryPath, ev.fileName);
             }
             break;
 
@@ -63,8 +86,22 @@ WindowsWatcher::WindowsWatcher(QObject* parent)
     Q_D(WindowsWatcher);
     auto windowsWorker = static_cast<WindowsWorker*>(d->worker.data());
     connect(windowsWorker, &WindowsWorker::finished, d->workerThread.data(), &QThread::quit);
+    connect(windowsWorker, &WindowsWorker::watchPathReady,
+            this, &DirectoryWatcher::watchPathReady);
+    connect(windowsWorker, &WindowsWorker::watchPathFailed,
+            this, &DirectoryWatcher::watchPathFailed);
+    connect(windowsWorker, &WindowsWorker::watchPathOverflowed,
+            this, &DirectoryWatcher::watchPathOverflowed);
     connect(windowsWorker, &WindowsWorker::started, this, &WindowsWatcher::observingStarted);
     connect(windowsWorker, &WindowsWorker::finished, this, &WindowsWatcher::observingStopped);
+}
+
+bool WindowsWatcher::isWatchPathReady(const QString &path) const
+{
+    Q_D(const WindowsWatcher);
+    const auto *windowsWorker =
+        static_cast<const WindowsWorker*>(d->worker.data());
+    return windowsWorker && windowsWorker->isWatchPathReady(path);
 }
 
 void WindowsWatcher::setWatchPath(const QString &path)
@@ -78,17 +115,6 @@ void WindowsWatcher::setWatchPath(const QString &path)
     }
 }
 
-void WindowsWatcher::stopObserving()
-{
-    Q_D(WindowsWatcher);
-    if (!d->workerThread || !d->workerThread->isRunning())
-        return;
-
-    // 先中断阻塞的 I/O，让工作线程能快速退出
-    cancelIo();
-    DirectoryWatcher::stopObserving();
-}
-
 void WindowsWatcher::requestWatchPath(const QString& path)
 {
     Q_D(WindowsWatcher);
@@ -98,15 +124,5 @@ void WindowsWatcher::requestWatchPath(const QString& path)
     if (windowsWorker) {
         // 直接调用而非 invokeMethod，避免依赖事件队列
         windowsWorker->requestDirectoryHandle(path);
-    }
-}
-
-void WindowsWatcher::cancelIo()
-{
-    Q_D(WindowsWatcher);
-    auto windowsWorker = static_cast<WindowsWorker*>(d->worker.data());
-    if (windowsWorker) {
-        // 直接调用而非 invokeMethod
-        windowsWorker->cancelIo();
     }
 }

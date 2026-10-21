@@ -117,6 +117,7 @@ public slots:
     void volumeDown();
 
     void startPlayback();
+    void resumeAnimation();
     void showContextMenu();
     void hideContextMenu();
     void showContextMenu(QPoint pos);

@@ -94,6 +94,12 @@ bool DirectoryWatcher::isObserving() const
     return d->workerThread && d->workerThread->isRunning();
 }
 
+bool DirectoryWatcher::isWatchPathReady(const QString& path) const
+{
+    Q_UNUSED(path);
+    return false;
+}
+
 void DirectoryWatcher::observe()
 {
     Q_D(DirectoryWatcher);
