@@ -5,6 +5,8 @@
 #include <QHash>
 #include <QRunnable>
 #include <cstddef>
+#include <cstdio>
+#include <exception>
 #include <iterator>
 #include <utility>
 
@@ -144,24 +146,49 @@ bool hasSupportedSuffix(const QString &name, const SuffixMatcher &matcher) {
 
 // 在 worker 线程枚举目录（纯函数：不触碰 DirectoryManager 成员，设置已快照）。
 // 每 256 个条目检查一次代数，切目录时旧扫描立即放手，不与新扫描抢磁盘。
+// 枚举中途出错（网络共享断开等 filesystem_error）保留已扫到的部分结果：
+// catch 落在本函数内，out 不随栈帧销毁 —— range-for 的 ++it 抛点位于循环体外，
+// 只能在函数级兜底而非循环体内；兜底日志若在 OOM 下再抛，由 runnable 边界收敛
 ScannedEntries scanDirectory(const QString &directoryPath, bool recursive,
                              const SuffixMatcher &matcher,
                              const std::atomic<quint64> *generation, quint64 myGeneration) {
     ScannedEntries out;
-    std::error_code ec;
-    const fs::path pathObj(directoryPath.toStdWString());
+    try {
+        std::error_code ec;
+        const fs::path pathObj(directoryPath.toStdWString());
 
-    int checked = 0;
-    const auto outdated = [&]() {
-        if (++checked < 256)
-            return false;
-        checked = 0;
-        return generation->load(std::memory_order_relaxed) != myGeneration;
-    };
+        int checked = 0;
+        const auto outdated = [&]() {
+            if (++checked < 256)
+                return false;
+            checked = 0;
+            return generation->load(std::memory_order_relaxed) != myGeneration;
+        };
 
-    if (recursive) {
-        fs::recursive_directory_iterator it(
-            pathObj, fs::directory_options::skip_permission_denied, ec);
+        if (recursive) {
+            fs::recursive_directory_iterator it(
+                pathObj, fs::directory_options::skip_permission_denied, ec);
+            if (ec)
+                return out;
+
+            for (const auto &entry : it) {
+                if (outdated()) {
+                    out.cancelled = true;
+                    return out;
+                }
+                // generic_wstring(): Windows 上统一正斜杠分隔，与 Qt 路径约定一致
+                QString path = QString::fromStdWString(entry.path().generic_wstring());
+                QString name = FSEntry::extractFileName(path);
+
+                if (!entry.is_directory(ec) && !ec && hasSupportedSuffix(name, matcher)) {
+                    if (auto newEntry = FSEntry::fromPath(path, name))
+                        out.files.emplace_back(std::move(*newEntry));
+                }
+            }
+            return out;
+        }
+
+        fs::directory_iterator it(pathObj, fs::directory_options::skip_permission_denied, ec);
         if (ec)
             return out;
 
@@ -170,43 +197,32 @@ ScannedEntries scanDirectory(const QString &directoryPath, bool recursive,
                 out.cancelled = true;
                 return out;
             }
-            // generic_wstring(): Windows 上统一正斜杠分隔，与 Qt 路径约定一致
             QString path = QString::fromStdWString(entry.path().generic_wstring());
             QString name = FSEntry::extractFileName(path);
 
-            if (!entry.is_directory(ec) && !ec && hasSupportedSuffix(name, matcher)) {
+            if (entry.is_directory(ec) && !ec) {
+                FSEntry newEntry;
+                newEntry.name = std::move(name);
+                newEntry.path = std::move(path);
+                newEntry.isDirectory = true;
+                out.dirs.emplace_back(std::move(newEntry));
+            } else if (!ec && hasSupportedSuffix(name, matcher)) {
+                // ⭐ QFileInfo 单次 stat 取齐 size/mtime
                 if (auto newEntry = FSEntry::fromPath(path, name))
                     out.files.emplace_back(std::move(*newEntry));
             }
         }
         return out;
-    }
-
-    fs::directory_iterator it(pathObj, fs::directory_options::skip_permission_denied, ec);
-    if (ec)
+    } catch (const std::exception &e) {
+        qWarning() << "directory scan aborted, keeping partial results:"
+                   << static_cast<qulonglong>(out.files.size() + out.dirs.size())
+                   << "entries. Cause:" << e.what() << "Directory:" << directoryPath;
         return out;
-
-    for (const auto &entry : it) {
-        if (outdated()) {
-            out.cancelled = true;
-            return out;
-        }
-        QString path = QString::fromStdWString(entry.path().generic_wstring());
-        QString name = FSEntry::extractFileName(path);
-
-        if (entry.is_directory(ec) && !ec) {
-            FSEntry newEntry;
-            newEntry.name = std::move(name);
-            newEntry.path = std::move(path);
-            newEntry.isDirectory = true;
-            out.dirs.emplace_back(std::move(newEntry));
-        } else if (!ec && hasSupportedSuffix(name, matcher)) {
-            // ⭐ QFileInfo 单次 stat 取齐 size/mtime
-            if (auto newEntry = FSEntry::fromPath(path, name))
-                out.files.emplace_back(std::move(*newEntry));
-        }
+    } catch (...) {
+        qWarning() << "directory scan aborted (unknown exception), keeping partial results from:"
+                   << directoryPath;
+        return out;
     }
-    return out;
 }
 } // namespace
 
@@ -668,9 +684,35 @@ void DirectoryManager::dispatchScan(const QString &directoryPath, bool recursive
     DirectoryManager *self = this;
     mScanPool.start(QRunnable::create(
         [self, directoryPath, recursive, matcher, sortMode, sortFolders, generation] {
-            // 异常逃出 runnable 会直接 std::terminate：扫描/排序全程兜底。
-            // 失败时按空结果收敛（仍走 applyScanResult：代数校验 + 重放缓冲事件 +
-            // emit loaded），避免 UI 永久停留在 isScanning()
+            // 兜底收尾：先投递（恢复优先）再日志；两者在 bad_alloc 下都可能再次抛出，
+            // 逃逸即 std::terminate —— 各自独立守护，最后降级到不分配的 C 通道留痕。
+            // reason 取 e.what()，仅在捕获作用域内同步使用，无悬垂
+            auto fallback = [&](const char *reason) noexcept {
+                try {
+                    QMetaObject::invokeMethod(self,
+                        [self, generation, directoryPath, sortMode, sortFolders] {
+                            self->applyScanResult({}, {}, generation, directoryPath,
+                                                  sortMode, sortFolders);
+                        },
+                        Qt::QueuedConnection);
+                } catch (...) {
+                    // OOM 下连投递都失败：本次扫描停留在 isScanning()，切目录会重新发起扫描恢复
+                    std::fprintf(stderr, "qimgv: empty scan result post failed: %s\n", reason);
+                    return;
+                }
+                try {
+                    qWarning() << "directory scan failed:" << reason
+                               << "- falling back to empty result:" << directoryPath;
+                } catch (...) {
+                    // qWarning 流式输出可能分配（正是 bad_alloc 场景）：C 通道不分配、不抛
+                    std::fprintf(stderr, "qimgv: directory scan failed: %s\n", reason);
+                }
+            };
+
+            // 异常逃出 runnable 会直接 std::terminate：扫描中途失败已由 scanDirectory
+            // 保留部分结果并记日志，这里兜住排序/投递等其余失败，按空结果收敛
+            //（仍走 applyScanResult：代数校验 + 重放缓冲事件 + emit loaded），
+            // 避免 UI 永久停留在 isScanning()；fallback 为 noexcept，异常不再逃入线程池
             try {
                 ScannedEntries entries =
                     scanDirectory(directoryPath, recursive, *matcher,
@@ -688,14 +730,10 @@ void DirectoryManager::dispatchScan(const QString &directoryPath, bool recursive
                                               generation, directoryPath, sortMode, sortFolders);
                     },
                     Qt::QueuedConnection);
+            } catch (const std::exception &e) {
+                fallback(e.what());
             } catch (...) {
-                qWarning() << "directory scan failed, falling back to empty result:" << directoryPath;
-                QMetaObject::invokeMethod(self,
-                    [self, generation, directoryPath, sortMode, sortFolders] {
-                        self->applyScanResult({}, {}, generation, directoryPath,
-                                              sortMode, sortFolders);
-                    },
-                    Qt::QueuedConnection);
+                fallback("unknown exception");
             }
         }));
 }

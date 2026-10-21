@@ -189,8 +189,9 @@ private:
     // ⭐ 后缀按长度分桶：目录扫描时每个文件只与同长度的少量后缀做
     // 大小写不敏感比较（不同长度必然不等），替代对全量集合的线性扫描。
     // readSettings() 整体替换不可变快照；worker 持 shared_ptr 副本，
-    // 捕获仅递增引用计数（noexcept），不再深拷贝全部分桶
-    std::shared_ptr<const SuffixMatcher> mSuffixMatcher = std::make_shared<const SuffixMatcher>();
+    // 捕获仅递增引用计数（noexcept），不再深拷贝全部分桶。
+    // 约定：构造函数体最先调用 readSettings() 完成初始化，故不做类内默认分配
+    std::shared_ptr<const SuffixMatcher> mSuffixMatcher;
     QCollator collator;
     std::vector<FSEntry> fileEntryVec, dirEntryVec;
     const FSEntry defaultEntry;
