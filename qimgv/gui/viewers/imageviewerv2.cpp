@@ -475,7 +475,8 @@ QPixmap ImageViewerV2::scaledFrameFor(int frameNumber, const QImage &frame, cons
 
     // 缓存按约 32MB 估算上限：目标尺寸越大能缓存的帧越少（4K 全屏只缓 1 帧，
     // 此时没有多帧缓存收益），避免长动画在缩小播放时额外吃掉与全尺寸帧缓存同量级的内存
-    constexpr qsizetype kCacheBudgetBytes = static_cast<qsizetype>(32) << 20;
+    // 乘法与移位在常量表达式内等价折算，但不触发 signed-bitwise 诊断
+    constexpr qsizetype kCacheBudgetBytes = static_cast<qsizetype>(32) * 1024 * 1024;
     const qsizetype frameBytes = qMax<qsizetype>(1, static_cast<qsizetype>(target.width()) * target.height() * 4);
     const qsizetype maxFrames = qMax<qsizetype>(1, kCacheBudgetBytes / frameBytes);
 

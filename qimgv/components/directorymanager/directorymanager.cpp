@@ -1,5 +1,6 @@
 #include "directorymanager.h"
 #include "utils/pathutils.h"
+#include <QDebug>
 #include <QDir>
 #include <QHash>
 #include <QRunnable>
@@ -322,7 +323,8 @@ void DirectoryManager::stopFileWatcher() {
 }
 
 void DirectoryManager::readSettings() {
-    mSuffixMatcher = SuffixMatcher(settings->supportedFormats());
+    // 整体替换不可变快照：在飞扫描继续持有旧 matcher，无锁、无深拷贝
+    mSuffixMatcher = std::make_shared<const SuffixMatcher>(settings->supportedFormats());
 }
 
 // ==================== 索引映射维护方法 ====================
@@ -656,29 +658,45 @@ void DirectoryManager::loadEntryListAsync(const QString &directoryPath, bool rec
 
 void DirectoryManager::dispatchScan(const QString &directoryPath, bool recursive,
                                     quint64 generation) {
-    // 值快照：worker 不读 Settings，也不碰其余成员
-    const SuffixMatcher matcher = mSuffixMatcher;
+    // 值快照：worker 不读 Settings，也不碰其余成员。
+    // shared_ptr 快照仅递增引用计数（noexcept、零分配）：
+    // 替代原先深拷贝全部分桶（每次扫描 ~17 次堆分配，且是 runnable 内唯一可能抛异常的捕获）
+    const std::shared_ptr<const SuffixMatcher> matcher = mSuffixMatcher;
     const SortingMode sortMode = mSortingMode;
     const bool sortFolders = settings->sortFolders();
 
     DirectoryManager *self = this;
     mScanPool.start(QRunnable::create(
         [self, directoryPath, recursive, matcher, sortMode, sortFolders, generation] {
-            ScannedEntries entries =
-                scanDirectory(directoryPath, recursive, matcher, &self->mScanGeneration, generation);
-            if (entries.cancelled)
-                return;
+            // 异常逃出 runnable 会直接 std::terminate：扫描/排序全程兜底。
+            // 失败时按空结果收敛（仍走 applyScanResult：代数校验 + 重放缓冲事件 +
+            // emit loaded），避免 UI 永久停留在 isScanning()
+            try {
+                ScannedEntries entries =
+                    scanDirectory(directoryPath, recursive, *matcher,
+                                  &self->mScanGeneration, generation);
+                if (entries.cancelled)
+                    return;
 
-            QCollator workerCollator = makeCollator();
-            sortEntries(entries.files, sortMode, false, workerCollator);
-            sortEntries(entries.dirs, sortMode, !sortFolders, workerCollator);
+                QCollator workerCollator = makeCollator();
+                sortEntries(entries.files, sortMode, false, workerCollator);
+                sortEntries(entries.dirs, sortMode, !sortFolders, workerCollator);
 
-            QMetaObject::invokeMethod(self,
-                [self, entries = std::move(entries), generation, directoryPath, sortMode, sortFolders]() mutable {
-                    self->applyScanResult(std::move(entries.files), std::move(entries.dirs),
-                                          generation, directoryPath, sortMode, sortFolders);
-                },
-                Qt::QueuedConnection);
+                QMetaObject::invokeMethod(self,
+                    [self, entries = std::move(entries), generation, directoryPath, sortMode, sortFolders]() mutable {
+                        self->applyScanResult(std::move(entries.files), std::move(entries.dirs),
+                                              generation, directoryPath, sortMode, sortFolders);
+                    },
+                    Qt::QueuedConnection);
+            } catch (...) {
+                qWarning() << "directory scan failed, falling back to empty result:" << directoryPath;
+                QMetaObject::invokeMethod(self,
+                    [self, generation, directoryPath, sortMode, sortFolders] {
+                        self->applyScanResult({}, {}, generation, directoryPath,
+                                              sortMode, sortFolders);
+                    },
+                    Qt::QueuedConnection);
+            }
         }));
 }
 
@@ -785,7 +803,7 @@ bool DirectoryManager::insertFileEntry(const QString &filePath) {
         return false;
 
     // 用 basename 取后缀（与目录扫描一致），避免目录名中的点被误判为文件后缀
-    if(!hasSupportedSuffix(entry->name, mSuffixMatcher))
+    if(!hasSupportedSuffix(entry->name, *mSuffixMatcher))
         return false;
 
     return forceInsertFileEntry(filePath, *entry);
@@ -863,7 +881,7 @@ bool DirectoryManager::renameFileEntryBatch(const QString &oldPath, const QStrin
         updateFileIndexAfterRemove(oldPath, idx);
         return false;
     }
-    if(!hasSupportedSuffix(newEntryOpt->name, mSuffixMatcher)) {
+    if(!hasSupportedSuffix(newEntryOpt->name, *mSuffixMatcher)) {
         const int idx = indexOfFile(oldPath);
         extraRemoves.append(QPair<QString,int>(oldPath, idx));
         fileEntryVec.erase(fileEntryVec.begin() + idx);
@@ -1404,7 +1422,7 @@ void DirectoryManager::processPendingAdditions(const QVector<QString> &adds) {
         } else {
             // ⭐ 用 basename 取后缀，与目录扫描保持一致，
             // 避免监视目录路径自身含点时误判
-            if(!hasSupportedSuffix(e->name, mSuffixMatcher)) continue;
+            if(!hasSupportedSuffix(e->name, *mSuffixMatcher)) continue;
             newFiles.push_back(std::move(*e));
         }
     }
